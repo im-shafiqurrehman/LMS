@@ -6,25 +6,24 @@ Everything you need to stand the project up from scratch. Use this alongside Cha
 
 ## `docker-compose.yml`
 
-Place this in the project root. It runs PostgreSQL and Redis locally without installing them on your machine.
+Place this in the project root. It runs MongoDB and Redis locally without installing them on your machine.
 
 ```yaml
 # docker-compose.yml
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: eduflow_postgres
+  mongodb:
+    image: mongo:7
+    container_name: eduflow_mongodb
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: yourpassword
-      POSTGRES_DB: eduflow
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: yourpassword
     ports:
-      - "5432:5432"
+      - "27017:27017"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mongodb_data:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -44,7 +43,7 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
+  mongodb_data:
   redis_data:
 ```
 
@@ -61,11 +60,11 @@ docker compose stop
 docker compose down -v
 
 # See logs
-docker compose logs -f postgres
+docker compose logs -f mongodb
 docker compose logs -f redis
 
-# Open a PostgreSQL shell
-docker compose exec postgres psql -U postgres -d eduflow
+# Open a MongoDB shell
+docker compose exec mongodb mongosh -u root -p yourpassword
 ```
 
 ---

@@ -6,19 +6,19 @@ Read this after building. It should read like things you already know — becaus
 
 ---
 
-## 1. PostgreSQL over MongoDB
+## 1. MongoDB over PostgreSQL
 
-**The decision:** Use a relational database (PostgreSQL) rather than a document database (MongoDB).
+**The decision:** Use a document database (MongoDB) rather than a relational database (PostgreSQL).
 
-**Why:** EduFlow's data has hard, mandatory relationships. An `Enrollment` without a `studentId` is meaningless. A `ProgressRecord` without an `enrollmentId` and a `lessonId` is orphaned garbage. A document database would allow these invalid states — it stores JSON blobs and doesn't enforce relationships between collections.
+**Why:** EduFlow's data is naturally document-shaped. Courses, lessons, and progress records have nested structures that map cleanly to JSON documents. MongoDB's schema flexibility allows the data model to evolve without migrations — adding a new field to a course doesn't require a schema change across the entire table.
 
-PostgreSQL enforces these constraints with foreign keys. If code attempts to create an `Enrollment` with a `studentId` that doesn't exist in `users`, PostgreSQL rejects the insert. This guarantee is permanent — it holds even during bugs, deploys, and direct database access. Application code can be wrong; a database constraint is always right.
+MongoDB with Prisma provides the best of both worlds: the flexibility of a document database with the type safety and validation of an ORM. Prisma enforces relationships at the application level, ensuring referential integrity while allowing the schema to evolve.
 
-The query patterns also favour PostgreSQL. "Give me all courses with their lesson counts and enrollment counts" is one SQL query with two aggregations. In MongoDB, it's an aggregation pipeline or multiple round trips. For a system built on relational data, SQL is a better fit.
+The query patterns also favour MongoDB for this use case. "Give me all courses with their lesson counts and enrollment counts" is a single aggregation pipeline. MongoDB Atlas Search provides powerful full-text search capabilities without needing a separate search service.
 
-**What MongoDB would have cost:** No referential integrity means application code must enforce all relationship constraints — and application code has bugs. Analytical queries become multi-stage aggregation pipelines instead of JOINs. The developer experience for complex queries is worse.
+**What PostgreSQL would have cost:** Rigid schema that requires migrations for every field change. Complex JOINs for nested data. Less natural fit for document-shaped data. Scaling horizontally requires more complex sharding strategies.
 
-**When MongoDB wins:** When the data is genuinely document-shaped — variable schema, deeply nested blobs, user-generated content. An event log, a CMS, or a product catalogue with wildly different attributes per category would all be reasonable MongoDB use cases.
+**When PostgreSQL wins:** When the data has strict, complex relationships with frequent cross-table joins, or when ACID transactions across multiple tables are critical. Financial systems with complex transactional requirements are better suited to PostgreSQL.
 
 ---
 
@@ -36,15 +36,15 @@ The two-token pattern resolves JWT's main weakness — non-revocability — by k
 
 ---
 
-## 3. Cloudinary for video storage, not PostgreSQL or the filesystem
+## 3. Cloudinary for video storage, not MongoDB or the filesystem
 
 **The decision:** Store video files in Cloudinary (a specialised media platform) rather than in the database as binary data or on the server filesystem.
 
-**Why:** Video files are large — a single lesson can be 1–5GB. Storing binary data in PostgreSQL bloats the database, makes backups slow and enormous, and serves files at the database server's network bandwidth rather than a CDN. Storing on the filesystem works for a single server but breaks immediately when you add a second server (they don't share a filesystem).
+**Why:** Video files are large — a single lesson can be 1–5GB. Storing binary data in MongoDB bloats the database, makes backups slow and enormous, and serves files at the database server's network bandwidth rather than a CDN. Storing on the filesystem works for a single server but breaks immediately when you add a second server (they don't share a filesystem).
 
 Cloudinary solves all of this: it stores files permanently, serves them from a global CDN (fast everywhere), handles transcoding (different resolutions, formats), and provides signed URL generation for access control. The per-request cost is zero — you pay for storage and bandwidth at Cloudinary's scale, not your server's.
 
-**What PostgreSQL storage would have cost:** Bloated database backups. Slow restores. Every video request hits the database connection pool. No CDN — full-speed delivery from a single VPS for every viewer globally.
+**What MongoDB storage would have cost:** Bloated database backups. Slow restores. Every video request hits the database connection pool. No CDN — full-speed delivery from a single VPS for every viewer globally.
 
 **What filesystem storage would have cost:** Files lost on server wipe. Files unavailable on horizontal scale. No CDN. Backup complexity.
 
@@ -66,9 +66,9 @@ Stripe's webhook is server-to-server. It retries until it receives a 200 respons
 
 **The decision:** The course catalogue uses cursor-based pagination rather than `LIMIT/OFFSET`.
 
-**Why:** `OFFSET N` in SQL is not a skip — PostgreSQL must read and discard the first N rows before returning your page. At large offsets, this is a table scan. At 100,000 courses and page 50 (offset 1000), every catalogue request scans and discards 1,000 rows.
+**Why:** `OFFSET N` in MongoDB is not a skip — MongoDB must read and discard the first N documents before returning your page. At large offsets, this is a collection scan. At 100,000 courses and page 50 (offset 1000), every catalogue request scans and discards 1,000 documents.
 
-Cursor pagination avoids this: instead of "skip N rows," it says "give me rows after this specific point." PostgreSQL uses the index to jump directly to that point. Query performance is constant regardless of which page you're on.
+Cursor pagination avoids this: instead of "skip N documents," it says "give me documents after this specific point." MongoDB uses the index to jump directly to that point. Query performance is constant regardless of which page you're on.
 
 The cursor-based response also handles real-time inserts correctly. With offset, if a course is published while a user is browsing page 3, all subsequent pages shift by one — the user sees a duplicate or skips a course. A cursor is anchored to a specific record; new inserts don't affect it.
 
@@ -80,7 +80,7 @@ The cursor-based response also handles real-time inserts correctly. With offset,
 
 **The decision:** Cache the catalogue endpoint in Redis with a 5-minute TTL, and explicitly invalidate the cache when a course is published or unpublished.
 
-**Why:** The catalogue is the highest-traffic endpoint in the system — hit by every visitor, logged in or not, multiple times per session. It reads the same data repeatedly: published courses, their categories, their instructor names. Hitting PostgreSQL on every request is wasteful when the data changes infrequently.
+**Why:** The catalogue is the highest-traffic endpoint in the system — hit by every visitor, logged in or not, multiple times per session. It reads the same data repeatedly: published courses, their categories, their instructor names. Hitting MongoDB on every request is wasteful when the data changes infrequently.
 
 Redis stores the result in memory — reads take microseconds vs milliseconds for a database query. For a popular page, this reduces database load by 90%+ and makes the page noticeably faster.
 
