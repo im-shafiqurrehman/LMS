@@ -55,7 +55,7 @@ src/
       courses.service.js
       courses.validators.js
   lib/
-    prisma.js      ← the Prisma client singleton
+    mongodb.js     ← the MongoDB client singleton
     redis.js       ← the Redis client
     email.js       ← the Resend email client
   middleware/
@@ -108,24 +108,22 @@ What each one does, briefly:
 - `zod` — validates and parses the environment config at boot (you'll use it for request validation too)
 - `nodemon` — restarts the server when files change, so you don't restart manually
 
-**Step 3 — Install Prisma**
+**Step 3 — Install MongoDB driver**
 
 ```bash
-npm install @prisma/client
-npm install --save-dev prisma
-npx prisma init --datasource-provider mongodb
+npm install mongodb
 ```
 
-This creates a `prisma/` directory with `schema.prisma` — the file where your database schema lives. It also creates a `.env` with a placeholder `DATABASE_URL`. Fill in your real MongoDB connection string, but keep it in `.env` only.
+This installs the official MongoDB Node.js driver. You'll use it directly to connect to MongoDB and perform queries. No schema file needed — MongoDB is schemaless at the database level.
 
 **Step 4 — Create the folder structure**
 
 ```bash
-mkdir -p src/modules/auth src/modules/courses src/modules/enrollments
+mkdir -p src/modules/auth src/modules/courses src/modules/enrollments src/modules/qa
 mkdir -p src/lib src/middleware src/config
 touch src/app.js src/server.js
 touch src/config/index.js
-touch src/lib/prisma.js
+touch src/lib/mongodb.js
 touch src/middleware/authenticate.js src/middleware/authorize.js src/middleware/errorHandler.js
 ```
 
@@ -171,20 +169,20 @@ Use **Zod** to define and parse this schema. When validation fails, Zod gives yo
 
 ---
 
-## The Prisma client singleton
+## The MongoDB client singleton
 
-Create `src/lib/prisma.js`. This file exports a single Prisma client instance. In development, Node's hot-reload can create multiple instances of the client if you're not careful — each one holds its own connection pool, and you'll hit connection limits fast.
+Create `src/lib/mongodb.js`. This file exports a single MongoDB client instance. In development, Node's hot-reload can create multiple instances of the client if you're not careful — each one holds its own connection pool, and you'll hit connection limits fast.
 
 The pattern to implement:
 
 ```js
-// src/lib/prisma.js — shape only
+// src/lib/mongodb.js — shape only
 // In development: attach the client to `global` so hot-reload reuses it
 // In production: just create it once (the module system handles singleton behaviour)
-// Export it as `prisma`
+// Export it as `client` and a helper function `getDb()` that returns the database
 ```
 
-Every module that needs the database imports from this file: `import { prisma } from '../lib/prisma.js'`. Never instantiate `PrismaClient` anywhere else.
+Every module that needs the database imports from this file: `import { getDb } from '../lib/mongodb.js'`. Never create a new `MongoClient` anywhere else.
 
 ---
 
@@ -200,7 +198,7 @@ Create `src/app.js` and `src/server.js`. The split is deliberate: `app.js` build
 `src/server.js` must:
 - Import the config (triggering validation at boot)
 - Import the app
-- Connect to the database (a quick Prisma `$connect` to verify the URL is reachable)
+- Connect to the database (a quick MongoDB `connect()` to verify the URL is reachable)
 - Start listening on `config.port`
 - Log a clear startup message: the port, the environment, and the timestamp
 
@@ -288,15 +286,11 @@ If you see `{ ok: 1 }`, the database is up.
 
 ---
 
-## The first migration — an empty schema
+## Verify the database connection
 
-Your `prisma/schema.prisma` currently has no models. That's fine — you'll add them in the next chapter. Run the initial migration now to verify the connection:
+Since MongoDB is schemaless, there's no migration step. You'll verify the connection works in `src/server.js` when you call `client.connect()`. If the connection string is correct, the server starts. If not, it fails with a clear error.
 
-```bash
-npx prisma migrate dev --name init
-```
-
-If the output shows the migration was created and the database is in sync, everything is connected. (Note: MongoDB doesn't store migrations in the database the way PostgreSQL does, but Prisma still tracks them locally so your schema evolution stays reproducible.)
+You'll create collections as you need them throughout the course — MongoDB creates collections automatically when you first insert a document.
 
 ---
 
@@ -305,7 +299,7 @@ If the output shows the migration was created and the database is in sync, every
 - [ ] `npm run dev` starts the server without errors; the console prints port, environment, and timestamp
 - [ ] The server refuses to start if `DATABASE_URL` is missing or malformed — the error names the missing variable
 - [ ] No `.env` file or real secret appears in `git log` or `git status`
-- [ ] `docker compose up -d` starts MongoDB and Redis; the Prisma migrate command succeeds
+- [ ] `docker compose up -d` starts MongoDB and Redis; the MongoDB connection succeeds
 - [ ] `GET /health` returns `{ "status": "ok" }` (add this as a sanity-check route in `app.js`)
 - [ ] The folder structure matches the layout described above
 
