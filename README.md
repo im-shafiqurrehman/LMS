@@ -114,8 +114,8 @@ Work through chapters in the numbered order. Each chapter builds on the previous
 | bcrypt | Password hashing | 05 |
 | jsonwebtoken | JWT signing + verification | 05 |
 | Next.js | Frontend framework | 04 |
-| React Query | Data fetching + caching | 04 |
-| Zustand | State management | 04 |
+| Redux Toolkit | State management (auth, catalogue) | 04 |
+| React Redux | React bindings for the Redux store | 04 |
 | Cloudinary | Video + file storage | 09 |
 | Stripe | Payment processing | 10 |
 | Redis / ioredis | Caching + rate limiter store | 13 |
