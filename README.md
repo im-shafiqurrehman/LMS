@@ -8,7 +8,7 @@
 
 **EduFlow** is a production-grade Learning Management System. Instructors publish courses made of video lessons. Students enroll, watch lessons, track progress, and earn certificates. An admin approves courses and oversees the platform.
 
-**Stack:** Node.js + Express · MongoDB · Redis · Cloudinary · Stripe · Resend · Next.js · Docker · Nginx · PM2
+**Stack:** Node.js + Express · MongoDB · Mongoose · Redis · Cloudinary · Stripe · Resend · Next.js · Docker · Nginx · PM2
 
 **Difficulty:** Advanced — assumes you can already build CRUD APIs and climbs into auth, authorization, media delivery, caching, payments, rate limiting, and production deployment.
 
@@ -92,10 +92,10 @@ LMS/
 Work through chapters in the numbered order. Each chapter builds on the previous one.
 
 | Phase | Chapters | What you build |
-|---|---|---|
-| **Phase 1 — Foundations** | 01, 02, 03 | The project, the database choice (MongoDB), the running server |
+|-------|----------|----------------|
+| **Phase 1 — Foundations** | 01, 02, 03 | The project, the database choice (MongoDB + Mongoose), the running server |
 | **Phase 2 — Frontend** | 04 | Next.js frontend setup, API client, auth state |
-| **Phase 3 — Identity** | 05, 06 (auth + authz) | Who users are and what they're allowed to do |
+| **Phase 3 — Identity** | 05, 06 (auth + authz) | Who users are and what they are allowed to do |
 | **Phase 4 — Learning product** | 07–11 | Catalogue, courses, enrollment, lessons, progress, certificates, Q&A |
 | **Phase 5 — Scale** | 12–15 | Search, caching, notifications, rate limiting |
 | **Phase 6 — Admin** | 16 | Platform oversight, approval workflow, metrics |
@@ -103,42 +103,13 @@ Work through chapters in the numbered order. Each chapter builds on the previous
 
 ---
 
-## How progress is gated
-
-Every chapter ends in either a **Definition of Done** (build chapters) or **Key Takeaways** (concept chapters). You do not move to the next chapter until every box is ticked. The learning log answers must be written and committed before you proceed.
-
-This is not optional — it's the mechanism that keeps a self-paced course honest.
-
----
-
-## The complexity ladder this course climbs
-
-| Rung | Chapter(s) |
-|---|---|
-| Project setup, config validation, env safety | 03 |
-| Next.js frontend setup, API client, state management | 04 |
-| Core schema design, data modelling with MongoDB | 02, 06, 07 |
-| Full auth: hashing, access + refresh tokens, email verification | 05 |
-| Authorization: role checks + ownership isolation (IDOR prevention) | 06 |
-| Pagination (cursor), N+1 prevention | 07 |
-| Payment processing, webhooks, idempotency | 09 |
-| Signed media URLs, access-gated content | 10 |
-| Q&A system: questions and instructor answers | 11 |
-| Full-text search with MongoDB Atlas Search | 12 |
-| Redis caching with invalidation | 13 |
-| Transactional email (fire-and-forget pattern) | 14 |
-| Rate limiting with Redis store | 15 |
-| Production deploy: PM2, Nginx, Let's Encrypt | 17 |
-
----
-
 ## Key technologies — quick reference
 
 | Technology | Purpose | Chapter introduced |
-|---|---|---|
+|------------|---------|-------------------|
 | Express.js | HTTP framework | 03 |
 | MongoDB | Primary database | 02 |
-| mongodb (native driver) | Database driver | 02 |
+| Mongoose | ODM (schema, validation, query API) | 02 |
 | Zod | Request + env validation | 03 |
 | bcrypt | Password hashing | 05 |
 | jsonwebtoken | JWT signing + verification | 05 |
@@ -163,4 +134,4 @@ Create a `learning-log/` folder in your EduFlow repo. For every chapter, copy `0
 
 ---
 
-*EduFlow — built chapter by chapter, explained decision by decision.*
+_EduFlow — built chapter by chapter, explained decision by decision._

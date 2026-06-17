@@ -1,192 +1,130 @@
 # Enrollment and Payments
 
-Enrollment is the moment EduFlow makes money. It's also the moment where correctness matters most — a student who pays and isn't enrolled, or a student who's enrolled without paying, are both catastrophic in different ways. This chapter builds the enrollment flow with Stripe handling the payment, and a webhook confirming it.
+A student browsing the catalogue sees a course they want. They click "Enroll." This chapter builds that flow: collecting payment via Stripe and granting access to the course only after the payment succeeds.
 
 ---
 
-## Why webhooks, not a redirect
+## Why not confirm enrollment on the frontend
 
-The naive approach to payment: the student clicks "Pay," gets redirected to Stripe, Stripe redirects them back to your `/payment/success` page, and your server enrolls them. This is wrong. The redirect can fail — the tab closes, the connection drops, the browser navigates away. You lose the confirmation. The student paid and isn't enrolled. Support tickets follow.
+The most obvious approach: the student pays on the frontend, the frontend tells the backend "payment succeeded," and the backend enrolls them. The problem: the frontend is client code. Anyone can send that "payment succeeded" message without paying anything. You cannot trust the client to report payment success.
 
-The correct approach: Stripe sends an **event** to your server via a webhook when the payment is confirmed on their side. Your server listens for the `payment_intent.succeeded` event and enrolls the student only then. The webhook is server-to-server — it doesn't depend on the student's browser staying open. The redirect is only for UX (showing "payment successful"); enrollment happens on the webhook, not the redirect.
+The correct approach uses **Stripe webhooks**. The flow:
 
-> **Worth reading:** Search "Stripe webhooks guide" — the official Stripe docs explain the webhook lifecycle clearly. Read the "Receive events" section before implementing.
+1. The backend creates a Stripe Payment Intent and returns its `client_secret` to the frontend.
+2. The frontend uses the Stripe.js library to collect card details and confirm the payment directly with Stripe's servers.
+3. Stripe sends an `payment_intent.succeeded` webhook event to your backend.
+4. The backend verifies the webhook signature, then enrolls the student.
 
----
-
-## The Enrollment schema
-
-Add to `prisma/schema.prisma`:
-
-```prisma
-model Enrollment {
-  id                   String    @id @default(uuid())
-  studentId            String
-  student              User      @relation("StudentEnrollments", fields: [studentId], references: [id])
-  courseId             String
-  course               Course    @relation(fields: [courseId], references: [id])
-  amountPaid           Decimal   @db.Decimal(10, 2)
-  stripePaymentIntentId String   @unique
-  enrolledAt           DateTime  @default(now())
-
-  progressRecords ProgressRecord[]
-  certificate     Certificate?
-
-  @@unique([studentId, courseId])
-  @@index([studentId])
-  @@index([courseId])
-}
-```
-
-`@@unique([studentId, courseId])` prevents a student from being enrolled in the same course twice — an important guard against duplicate webhooks.
-
-`amountPaid` stores what was actually charged at enrollment time. If the course price changes later, existing enrollment records are unaffected — they show what the student actually paid.
-
-Run: `npx prisma migrate dev --name add-enrollment`
+The enrollment happens only when Stripe's servers tell your backend it succeeded — never based on the client's self-report.
 
 ---
 
-## Install Stripe
+## The Enrollment model
 
-```bash
-npm install stripe
-```
-
-Configure in `src/lib/stripe.js`:
+Create `src/models/enrollment.model.js`:
 
 ```js
-// Initialise and export the Stripe client using config.stripeSecretKey
+// src/models/enrollment.model.js — shape only
+import mongoose from 'mongoose';
+
+const enrollmentSchema = new mongoose.Schema(
+  {
+    studentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    courseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Course',
+      required: true,
+    },
+    amountPaid:             { type: Number, required: true }, // price snapshot
+    stripePaymentIntentId:  { type: String, required: true, unique: true },
+    enrolledAt:             { type: Date, default: Date.now },
+  }
+);
+
+// A student cannot enroll in the same course twice
+enrollmentSchema.index({ studentId: 1, courseId: 1 }, { unique: true });
+enrollmentSchema.index({ courseId: 1 });
+
+export const Enrollment = mongoose.model('Enrollment', enrollmentSchema);
 ```
+
+Notice `amountPaid`. This stores what the student actually paid at enrollment time — not the course's current price. If the instructor raises the price next month, no existing enrollment is affected.
 
 ---
 
-## Scaffold the enrollment module
+## The payment flow
 
-```bash
+Scaffold:
+
+```
 mkdir -p src/modules/enrollments
 touch src/modules/enrollments/enrollments.routes.js
 touch src/modules/enrollments/enrollments.service.js
 ```
 
-Mount at `/api/enrollments` in `app.js`.
+**Step 1 — Create a Payment Intent**
 
----
-
-## Create a payment intent
-
-```
-POST /api/enrollments/checkout
-```
-
-Protected: `authenticate` + `authorize('STUDENT')`.
-
-Request body:
-
-```json
-{ "courseId": "uuid" }
-```
-
-Response:
-
-```json
-{
-  "clientSecret": "pi_abc_secret_xyz",
-  "paymentIntentId": "pi_abc"
-}
-```
+`POST /api/enrollments/create-payment-intent`  
+Auth: student  
+Body: `{ courseId }`
 
 The service must:
 
-1. Find the course — return 404 if not found or not `PUBLISHED`
-2. Check that the student is not already enrolled — return 409 if they are
-3. Create a Stripe PaymentIntent: `stripe.paymentIntents.create({ amount, currency, metadata: { studentId, courseId } })`
-   - `amount` is in cents (multiply the course price in dollars by 100)
-   - `metadata` is critical — it's what the webhook uses to know who to enroll in which course
-4. Return the `client_secret` to the frontend
+1. Fetch the course and confirm it is published.
+2. Check that the student is not already enrolled: `Enrollment.findOne({ studentId, courseId })` — if found, return 409.
+3. Call `stripe.paymentIntents.create({ amount: course.price * 100, currency: 'usd', metadata: { studentId, courseId } })`.
+4. Return `{ clientSecret: paymentIntent.client_secret }`.
 
-The frontend uses the `client_secret` with Stripe.js to render the payment form. The server never handles card details.
+The frontend uses the `clientSecret` to complete payment with Stripe.js. Nothing is stored in your database yet — enrollment happens in step 2.
 
-✅ Verify: calling this endpoint creates a PaymentIntent in your Stripe test dashboard.
-❌ Don't store card details anywhere. Stripe handles that; your server only ever sees the PaymentIntent ID.
+**Step 2 — Handle the Stripe webhook**
 
----
+`POST /api/enrollments/webhook`  
+No auth — verified by signature instead.
 
-## The Stripe webhook
-
-```
-POST /api/webhooks/stripe
-```
-
-This route is **public** (no `authenticate` middleware) — it's called by Stripe's servers, not the student's browser. But it must verify the request came from Stripe using the webhook signature.
-
-Create `src/modules/webhooks/stripe.webhook.js`.
-
-**Critical:** This route must use `express.raw()` middleware instead of `express.json()` — Stripe's signature verification requires the raw request body. Mount the webhook route before the `express.json()` middleware in `app.js`, or apply `express.raw()` specifically to this route.
+This endpoint must be registered **before** `express.json()` in `app.js`, with the raw request body. Stripe requires the raw body to verify the signature:
 
 ```js
-// Webhook handler — shape
-// 1. Get the raw body and the 'stripe-signature' header
-// 2. Call stripe.webhooks.constructEvent(rawBody, signature, config.stripeWebhookSecret)
-//    — throws if the signature is invalid
-// 3. Switch on event.type:
-//    case 'payment_intent.succeeded': enrollStudent(event.data.object)
-// 4. Return HTTP 200 immediately — Stripe will retry if it doesn't get 200
+// In app.js — raw body for the webhook, before express.json()
+app.use('/api/enrollments/webhook', express.raw({ type: 'application/json' }));
 ```
 
-The `enrollStudent` function:
+The webhook handler must:
 
-1. Extract `studentId` and `courseId` from `paymentIntent.metadata`
-2. Extract `amount` from `paymentIntent.amount_received` (convert cents back to dollars)
-3. Extract `stripePaymentIntentId` from `paymentIntent.id`
-4. Use `prisma.enrollment.upsert` with `where: { studentId_courseId: { studentId, courseId } }` — upsert handles the case where Stripe fires the webhook more than once (idempotency)
-5. If the enrollment was newly created, trigger the enrollment confirmation email (queued for the notifications chapter)
+1. Verify the signature: `stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], config.stripeWebhookSecret)`.
+2. If the signature fails, return 400.
+3. Handle only `payment_intent.succeeded` events.
+4. Extract `studentId` and `courseId` from `event.data.object.metadata`.
+5. Create the enrollment: `new Enrollment({ studentId, courseId, amountPaid: amount / 100, stripePaymentIntentId: id })`.
+6. Return 200.
 
-> **Worth reading:** Search "Stripe webhook idempotency" — Stripe can deliver the same event more than once. Your webhook handler must be idempotent (safe to run multiple times). The `@@unique([studentId, courseId])` constraint and the `upsert` together make it so.
+Idempotency: Stripe may deliver the same webhook multiple times. The `unique: true` index on `stripePaymentIntentId` ensures a duplicate delivery does not create a duplicate enrollment — the second insert will fail with a duplicate key error, which you catch and ignore.
 
-**Testing with Stripe CLI:**
+Install Stripe:
 
-```bash
-# Install Stripe CLI, then:
-stripe listen --forward-to localhost:3000/api/webhooks/stripe
-stripe trigger payment_intent.succeeded
+```
+npm install stripe
 ```
 
-This simulates a successful payment locally without a real card.
-
-✅ After the triggered event, an enrollment row exists in the database.
-✅ Triggering the same event again does not create a duplicate enrollment (upsert works).
-
----
-
-## Check enrollment (for lesson access gating)
-
-Add to `enrollments.service.js`:
-
-```js
-async function isEnrolled(studentId, courseId) {
-  const enrollment = await prisma.enrollment.findUnique({
-    where: { studentId_courseId: { studentId, courseId } }
-  });
-  return !!enrollment;
-}
-```
-
-Export it. You'll import it in the lesson access service next chapter.
+> **Worth reading:** Search "Stripe webhooks Node.js" — the official Stripe documentation on webhook verification is clear and includes Node.js examples.
 
 ---
 
 ## Definition of Done
 
-- [ ] `POST /api/enrollments/checkout` creates a Stripe PaymentIntent and returns the `clientSecret`
-- [ ] The Stripe webhook correctly enrolls a student on `payment_intent.succeeded`
-- [ ] A second webhook event for the same payment does not create a duplicate enrollment
-- [ ] An already-enrolled student attempting checkout receives 409
-- [ ] `amountPaid` on the enrollment record matches the course price at time of enrollment
-- [ ] The webhook rejects requests with an invalid Stripe signature (returns 400)
+- [ ] `POST /api/enrollments/create-payment-intent` returns a Stripe `clientSecret` for a valid course
+- [ ] Attempting to create a payment intent for an already-enrolled course returns 409
+- [ ] The webhook endpoint verifies the Stripe signature and rejects unverified requests with 400
+- [ ] A `payment_intent.succeeded` event creates an enrollment with the correct `amountPaid`
+- [ ] A duplicate webhook (same `stripePaymentIntentId`) does not create a duplicate enrollment
 
 Write in `learning-log/07-enrollment-and-payments.md`:
 
-1. Why is the enrollment triggered by the webhook and not the payment redirect?
-2. What is idempotency, and how does the `upsert` + unique constraint make the webhook idempotent?
-3. Why does `amountPaid` exist on the enrollment record rather than referencing the course's current price?
-4. Why must the Stripe webhook use `express.raw()` instead of `express.json()`?
+1. Why can you not trust the frontend to report payment success?
+2. What does Stripe's webhook signature verification protect against?
+3. Why does the `Enrollment` model store `amountPaid` rather than referencing the course price at query time?
+4. What does idempotency mean in the context of the Stripe webhook handler?

@@ -2,7 +2,7 @@
 
 Every real project starts with a week of decisions that seem administrative but are actually foundational. The folder structure you pick at the start shapes how easy every future feature is to add. The config pattern you choose determines whether a leaked `.env` file is a catastrophe or a recoverable mistake. The linting setup determines whether the codebase stays readable after six weeks of momentum.
 
-This chapter gets EduFlow standing. By the end, the server runs, connects to the database, reads config safely from the environment, and rejects bad config at startup — before serving a single request.
+This chapter gets EduFlow standing. By the end, the server runs, connects to the database via Mongoose, reads config safely from the environment, and rejects bad config at startup — before serving a single request.
 
 ---
 
@@ -16,13 +16,13 @@ None of this is hard to prevent. You prevent it by making two decisions at the s
 2. **`.env` never enters Git.** Not once, not "just temporarily." The `.gitignore` is the first file you create.
 
 ✅ Create `.gitignore` before any other file, with `.env` and `.env.*` in it.
-❌ Don't add `.env` to Git and plan to remove it "later." Later never comes, and `git log` is permanent.
+❌ Do not add `.env` to Git and plan to remove it "later." Later never comes, and `git log` is permanent.
 
 ---
 
 ## Folder structure
 
-You will use a **module-based structure**, not a layer-based one. Here's the difference, and why it matters.
+You will use a **module-based structure**, not a layer-based one. Here is the difference, and why it matters.
 
 **Layer-based** puts all routes together, all services together, all models together:
 
@@ -39,7 +39,7 @@ src/
     course.model.js
 ```
 
-This looks organised. The problem is that when you work on authentication, you're jumping between three folders constantly — routes, services, models — because they're separated by type, not by feature. At ten features, it becomes a navigation puzzle.
+This looks organised. The problem is that when you work on authentication, you are jumping between three folders constantly — routes, services, models — because they are separated by type, not by feature. At ten features, it becomes a navigation puzzle.
 
 **Module-based** groups everything for a feature together:
 
@@ -54,21 +54,27 @@ src/
       courses.routes.js
       courses.service.js
       courses.validators.js
+  models/
+    user.model.js          ← Mongoose models live here, shared across modules
+    course.model.js
+    lesson.model.js
+    enrollment.model.js
+    refreshToken.model.js
   lib/
-    mongodb.js     ← the MongoDB client singleton
-    redis.js       ← the Redis client
-    email.js       ← the Resend email client
+    db.js                  ← Mongoose connection
+    redis.js               ← Redis client
+    email.js               ← Resend email client
   middleware/
     authenticate.js
     authorize.js
     errorHandler.js
   config/
-    index.js       ← all env config, validated at boot
+    index.js               ← all env config, validated at boot
   app.js
   server.js
 ```
 
-This is the structure you will build. Every feature is self-contained in its folder. When you add notifications, you add a `notifications/` module — you don't scatter files across three directories.
+This is the structure you will build. Every feature is self-contained in its folder. When you add notifications, you add a `notifications/` module — you do not scatter files across three directories. Models live in a shared `models/` folder because Mongoose models are imported across multiple modules and having them in one place prevents circular imports.
 
 Create this structure now — empty folders and placeholder files — before writing logic. The structure is the commitment.
 
@@ -80,7 +86,7 @@ Open your terminal in the directory where EduFlow will live.
 
 **Step 1 — Initialise the project**
 
-```bash
+```
 mkdir eduflow && cd eduflow
 npm init -y
 git init
@@ -90,40 +96,43 @@ echo "node_modules" >> .gitignore
 ```
 
 ✅ Verify: `git status` shows `.gitignore` as a new file and nothing else.
-❌ Don't run `npm install` before `.gitignore` exists — `node_modules` can accidentally be staged.
+❌ Do not run `npm install` before `.gitignore` exists — `node_modules` can accidentally be staged.
 
 **Step 2 — Install core dependencies**
 
-```bash
+```
 npm install express cors helmet morgan dotenv zod
 npm install --save-dev nodemon eslint prettier
 ```
 
-What each one does, briefly:
+What each one does:
+
 - `express` — the HTTP framework
 - `cors` — allows the frontend (running on a different port) to make requests to the API
 - `helmet` — sets sensible security headers on every response with one line
 - `morgan` — logs every incoming request so you can see what the server is doing
 - `dotenv` — loads `.env` into `process.env` at startup
-- `zod` — validates and parses the environment config at boot (you'll use it for request validation too)
-- `nodemon` — restarts the server when files change, so you don't restart manually
+- `zod` — validates and parses the environment config at boot (you will use it for request validation too)
+- `nodemon` — restarts the server when files change, so you do not restart manually
 
-**Step 3 — Install MongoDB driver**
+**Step 3 — Install Mongoose**
 
-```bash
-npm install mongodb
+```
+npm install mongoose
 ```
 
-This installs the official MongoDB Node.js driver. You'll use it directly to connect to MongoDB and perform queries. No schema file needed — MongoDB is schemaless at the database level.
+This installs Mongoose, the MongoDB Object Document Mapper. Mongoose sits on top of the native MongoDB driver and gives you schema validation, middleware hooks, and a clean query API. You will define every collection's shape as a Mongoose `Schema` and interact with the database through Mongoose `Model` objects.
+
+✅ Verify: `mongoose` appears in `package.json` dependencies.
 
 **Step 4 — Create the folder structure**
 
-```bash
+```
 mkdir -p src/modules/auth src/modules/courses src/modules/enrollments src/modules/qa
-mkdir -p src/lib src/middleware src/config
+mkdir -p src/models src/lib src/middleware src/config
 touch src/app.js src/server.js
 touch src/config/index.js
-touch src/lib/mongodb.js
+touch src/lib/db.js
 touch src/middleware/authenticate.js src/middleware/authorize.js src/middleware/errorHandler.js
 ```
 
@@ -140,21 +149,21 @@ The shape it must produce:
 ```js
 // src/config/index.js — shape only, not the implementation
 {
-  port: 3000,                // number, default 3000
-  nodeEnv: "development",   // "development" | "production" | "test"
-  databaseUrl: "...",        // required string
-  jwtSecret: "...",          // required string, min 32 chars
-  jwtRefreshSecret: "...",   // required string, min 32 chars
-  jwtAccessExpiry: "15m",    // default "15m"
-  jwtRefreshExpiry: "7d",    // default "7d"
+  port: 3000,                 // number, default 3000
+  nodeEnv: "development",    // "development" | "production" | "test"
+  databaseUrl: "...",         // required string — your MongoDB URI
+  jwtSecret: "...",           // required string, min 32 chars
+  jwtRefreshSecret: "...",    // required string, min 32 chars
+  jwtAccessExpiry: "15m",     // default "15m"
+  jwtRefreshExpiry: "7d",     // default "7d"
   cloudinaryCloudName: "...", // required string
   cloudinaryApiKey: "...",    // required string
   cloudinaryApiSecret: "...", // required string
-  redisUrl: "...",            // required string
-  resendApiKey: "...",        // required string
-  stripeSecretKey: "...",     // required string
+  redisUrl: "...",             // required string
+  resendApiKey: "...",         // required string
+  stripeSecretKey: "...",      // required string
   stripeWebhookSecret: "...", // required string
-  frontendUrl: "...",         // required string (for CORS)
+  frontendUrl: "...",          // required string (for CORS)
 }
 ```
 
@@ -163,26 +172,42 @@ Use **Zod** to define and parse this schema. When validation fails, Zod gives yo
 > **Worth reading:** Search "Zod environment validation Node.js" — there are several short guides showing the pattern. The T3 stack's `env.js` pattern is a good reference.
 
 ✅ The server should print each missing variable's name when startup fails, not just a generic error.
-❌ Don't use `process.env.JWT_SECRET` directly in a route file. All env access goes through `src/config/index.js`.
+❌ Do not use `process.env.JWT_SECRET` directly in a route file. All env access goes through `src/config/index.js`.
 
 **Hint:** Zod's `.safeParse()` returns a result object with a `success` boolean and an `error` with a `.format()` method — that formatted error is what you print to the console before calling `process.exit(1)`.
 
 ---
 
-## The MongoDB client singleton
+## The Mongoose connection
 
-Create `src/lib/mongodb.js`. This file exports a single MongoDB client instance. In development, Node's hot-reload can create multiple instances of the client if you're not careful — each one holds its own connection pool, and you'll hit connection limits fast.
+Create `src/lib/db.js`. This file manages the Mongoose connection. In development, Node's hot-reload can create multiple connections if you are not careful — Mongoose handles this for you with its built-in connection state, but you still need to connect once and reuse the connection.
 
 The pattern to implement:
 
 ```js
-// src/lib/mongodb.js — shape only
-// In development: attach the client to `global` so hot-reload reuses it
-// In production: just create it once (the module system handles singleton behaviour)
-// Export it as `client` and a helper function `getDb()` that returns the database
+// src/lib/db.js — shape only
+import mongoose from 'mongoose';
+import { config } from '../config/index.js';
+
+let isConnected = false;
+
+export async function connectDB() {
+  if (isConnected) {
+    return;
+  }
+
+  const conn = await mongoose.connect(config.databaseUrl);
+  isConnected = true;
+  console.log(`MongoDB connected: ${conn.connection.host}`);
+}
 ```
 
-Every module that needs the database imports from this file: `import { getDb } from '../lib/mongodb.js'`. Never create a new `MongoClient` anywhere else.
+Key points:
+- `isConnected` prevents duplicate connections during hot-reload in development.
+- `mongoose.connect()` takes your MongoDB URI and returns a connection object with the host name.
+- Every Mongoose model you import anywhere in the app shares this single connection automatically.
+
+✅ You do not need to pass `db` or a client around. Once `connectDB()` is called in `server.js`, every model file can call `User.find()` or `Course.save()` directly — Mongoose routes them through the shared connection.
 
 ---
 
@@ -191,16 +216,39 @@ Every module that needs the database imports from this file: `import { getDb } f
 Create `src/app.js` and `src/server.js`. The split is deliberate: `app.js` builds and configures the Express application (middleware, routes), and `server.js` starts it listening. This separation makes the app easier to test — tests can import `app.js` without starting a server.
 
 `src/app.js` must:
+
 - Import and apply `helmet()`, `cors()`, `morgan()`, `express.json()`
 - Apply your error-handling middleware last (after routes)
 - Export the app
 
 `src/server.js` must:
+
 - Import the config (triggering validation at boot)
 - Import the app
-- Connect to the database (a quick MongoDB `connect()` to verify the URL is reachable)
+- Call `connectDB()` to establish the Mongoose connection before serving any requests
 - Start listening on `config.port`
 - Log a clear startup message: the port, the environment, and the timestamp
+
+The critical ordering: **connect the database before you start listening**. Requests that arrive before the database is connected will fail in confusing ways. Start the server only after the Mongoose connection resolves.
+
+```js
+// src/server.js — shape only
+import { config } from './config/index.js';
+import { connectDB } from './lib/db.js';
+import app from './app.js';
+
+async function start() {
+  await connectDB();          // database first
+  app.listen(config.port, () => {
+    console.log(`EduFlow running on port ${config.port} [${config.nodeEnv}]`);
+  });
+}
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
+```
 
 ---
 
@@ -231,12 +279,12 @@ RESEND_API_KEY=
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
 
-FRONTEND_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:3001
 ```
 
-Leave Cloudinary, Resend, and Stripe blank for now — the server startup validation will fail for those. Temporarily remove them from the required list in `config/index.js` and add a `// TODO: required before chapter N` comment. Add them back when that chapter arrives.
+Leave Cloudinary, Resend, and Stripe blank for now — temporarily mark them optional with a `// TODO: required before chapter N` comment in `config/index.js`. Add them back to required when that chapter arrives.
 
-✅ The only `.env` values you fill in now: `DATABASE_URL` (MongoDB URI), `JWT_SECRET`, `JWT_REFRESH_SECRET`, `REDIS_URL`.
+✅ The only `.env` values you fill in now: `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `REDIS_URL`.
 
 ---
 
@@ -270,37 +318,43 @@ volumes:
 
 Start them:
 
-```bash
+```
 docker compose up -d
 ```
 
 Verify MongoDB is reachable:
 
-```bash
+```
 docker compose exec mongodb mongosh -u admin -p yourpassword --eval "db.adminCommand('ping')"
 ```
 
 If you see `{ ok: 1 }`, the database is up.
 
-> **Worth reading:** Search "Docker Compose for local development Node.js" — search results will give you several guides on why volumes matter (your data survives container restarts) and why pinning image versions matters (reproducibility).
+> **Worth reading:** Search "Docker Compose for local development Node.js" — several guides cover why volumes matter (your data survives container restarts) and why pinning image versions matters (reproducibility).
 
 ---
 
-## Verify the database connection
+## Verify the connection
 
-Since MongoDB is schemaless, there's no migration step. You'll verify the connection works in `src/server.js` when you call `client.connect()`. If the connection string is correct, the server starts. If not, it fails with a clear error.
+Start the server:
 
-You'll create collections as you need them throughout the course — MongoDB creates collections automatically when you first insert a document.
+```
+npm run dev
+```
+
+You should see two log lines: the Mongoose connection message (`MongoDB connected: localhost`), and the server startup message. If you see a Mongoose connection error instead, check that your `DATABASE_URL` in `.env` matches the credentials in `docker-compose.yml`.
+
+Unlike a relational database, there is no migration step. Mongoose creates collections automatically when you first insert a document. The models you define in later chapters tell Mongoose what each collection's documents should look like — you do not create them manually.
 
 ---
 
 ## Definition of Done
 
-- [ ] `npm run dev` starts the server without errors; the console prints port, environment, and timestamp
-- [ ] The server refuses to start if `DATABASE_URL` is missing or malformed — the error names the missing variable
+- [ ] `npm run dev` starts the server without errors; the console prints the Mongoose connection and the port
+- [ ] The server refuses to start if `DATABASE_URL` is missing — the error names the missing variable
 - [ ] No `.env` file or real secret appears in `git log` or `git status`
-- [ ] `docker compose up -d` starts MongoDB and Redis; the MongoDB connection succeeds
-- [ ] `GET /health` returns `{ "status": "ok" }` (add this as a sanity-check route in `app.js`)
-- [ ] The folder structure matches the layout described above
+- [ ] `docker compose up -d` starts MongoDB and Redis; Mongoose connects successfully
+- [ ] `GET /api/health` returns `{ "status": "ok" }` (add this sanity-check route to `app.js`)
+- [ ] The folder structure matches the layout described above, with `src/models/` ready for Mongoose model files
 
-All boxes ticked? Then continue to Chapter 4 — Authentication. If not, that's where today's work is.
+All boxes ticked? Then continue to Chapter 4 — Next.js Frontend Setup. If not, that is where today's work is.

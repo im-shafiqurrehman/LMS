@@ -1,136 +1,76 @@
-# Document, Demonstrate, and Close
+# Close Out — Document, Demonstrate, and Reflect
 
-You've built EduFlow end to end. It runs in production, serves real HTTPS traffic, handles payments, protects video lessons behind enrollment checks, tracks progress, generates certificates, and runs behind a reverse proxy with a process manager. That's a real system.
-
-This chapter closes the loop: you document it, demonstrate it, write it up, and prove you understand every part of it.
+You built it. Now you own it: a real URL, a working application, a codebase you understand. This chapter closes the course.
 
 ---
 
-## Draw the architecture
+## Documentation
 
-Create an architecture diagram showing how the pieces connect. Include:
+A codebase without documentation is a system only the original author understands — and even they forget after six months.
 
-- The client (browser / Next.js frontend)
-- Nginx (reverse proxy)
-- Node.js / Express (the API, running in PM2 cluster)
-- MongoDB (the database)
-- Redis (cache + rate limiter)
-- Cloudinary (video and file storage)
-- Stripe (payment processing, webhooks)
-- Resend (email delivery)
+Create a `docs/` folder in your repo and write:
 
-Use any tool: draw.io, Excalidraw, Miro, or a Mermaid diagram in your README. Save it as `docs/architecture.png` (or `.svg`) and reference it in the README.
+- **`docs/architecture.md`** — A diagram (draw.io, Excalidraw, or plain ASCII) showing the request flow: browser → Nginx → Next.js frontend / Express backend → MongoDB, Redis, Cloudinary, Stripe, Resend.
+- **`docs/erd.md`** — The entity-relationship diagram: all Mongoose models, their fields, and the references between them.
+- **`docs/api.md`** — A list of every API endpoint: method, path, auth required, request body shape, response shape.
+
+This documentation has two audiences: an interviewer who wants to understand the system quickly, and your future self in six months.
 
 ---
 
-## Draw the ERD
+## The demo video
 
-Export your full entity-relationship diagram. The easiest way:
+Record a 3–5 minute screen recording that shows the full product loop:
 
-```bash
-npx prisma-erd-generator
-```
+1. Register as an instructor, create a course, add a lesson, submit for review.
+2. Approve the course as an admin.
+3. Register as a student, find the course in the catalogue, enroll (use a Stripe test card).
+4. Watch the first lesson, mark it complete.
+5. Complete all lessons, download the certificate.
 
-Or use Prisma Studio's built-in ERD view, or draw it manually. Every table, every column, every relationship. Save as `docs/erd.png`.
-
----
-
-## Write the README
-
-Your `README.md` is the first thing anyone sees when they visit your repository. Write it like a product page for a developer audience:
-
-**Sections to include:**
-
-1. **Project overview** — what EduFlow is in two sentences
-2. **Tech stack** — Node.js, Express, MongoDB, Prisma, Redis, Cloudinary, Stripe, Resend, Next.js, Docker, Nginx, PM2
-3. **Architecture diagram** — embed the image
-4. **ERD** — embed the image
-5. **Local setup** — step-by-step from `git clone` to `npm run dev`, including Docker Compose and `.env` setup
-6. **API reference** — a table of every endpoint: method, path, auth required, brief description
-7. **Key engineering decisions** — 4–5 paragraphs on the decisions that shaped the system:
-   - Why MongoDB over a relational database
-   - Why JWT with refresh tokens (and the trade-offs)
-   - Why Cloudinary for video (vs storing in the database)
-   - Why webhooks drive enrollment (not the payment redirect)
-   - One more of your choosing
-8. **Known limitations and future work** — be honest about what's missing or would need work at real scale
-
-A README that describes *why* decisions were made is what separates a portfolio project from a tutorial follow-along.
+Host it on YouTube (unlisted is fine) and add the link to your `README.md`.
 
 ---
 
-## Record a demo video
+## The portfolio write-up
 
-Record a 5–10 minute walkthrough:
+The demo video shows what you built. The write-up explains why. Write 400–600 words on:
 
-1. Start at the live URL (`https://api.yourdomain.com`)
-2. Show the Swagger/Postman collection (or plain curl commands) exercising the main flows:
-   - Register → verify email → login
-   - Browse the catalogue (show the Redis cache hit in logs)
-   - Enroll in a course (trigger the Stripe webhook via CLI)
-   - Watch a lesson (show the signed URL in the response)
-   - Mark all lessons complete → certificate generated
-   - Admin approval flow
-3. Show the PM2 process list and the Nginx config
-4. Show the database (Prisma Studio) with real data
+- The technical decisions you made and why (MongoDB + Mongoose, cursor pagination, signed Cloudinary URLs)
+- One thing that turned out to be harder than expected and how you solved it
+- One thing you would do differently now
 
-Upload to YouTube (unlisted is fine) and link in the README.
+Publish it on LinkedIn, your blog, or a dev platform (dev.to, Hashnode). This is the artefact that persists after the demo video is gone.
 
 ---
 
-## Portfolio write-up
+## Bar-raiser (one line)
 
-Write a 400–600 word article about building EduFlow. Publish on Dev.to, Hashnode, or LinkedIn. The structure:
+Pick one creative feature or technical improvement that does not break any core rules (data isolation, no hardcoded secrets). Ideas: real-time progress updates via Server-Sent Events, course completion leaderboard, instructor revenue dashboard, automated email sequences after enrollment.
 
-- What the project does and why you built it
-- The most interesting engineering decision you made (pick one and go deep)
-- What you'd do differently if you built it again
-- A link to the repo and the live URL
-
-This is not optional. The write-up forces you to articulate your decisions in plain language — which is exactly what a technical interview asks you to do. Doing it now, while the code is fresh, is the best time.
+Implement it and document the decision.
 
 ---
 
-## Bar-raiser
+## The viva
 
-Pick one of the following to implement — or propose your own that doesn't compromise data isolation or payment integrity:
+You will be asked to walk through how EduFlow works and answer "what would break if…" questions. Typical questions:
 
-- **Automatic subtitle generation** — integrate Cloudinary's auto-captioning for video lessons and expose the transcript via a lesson endpoint
-- **Instructor payout tracking** — calculate per-instructor revenue (enrollment amount × platform commission) and expose it in the instructor dashboard
-- **Course ratings and reviews** — students can rate a completed course (1–5 stars) and leave a text review; the catalogue shows average rating
-- **Referral codes** — instructors get a shareable referral link; enrollments via the link record the referral and grant a discount
+- "Walk me through what happens when a student buys a course."
+- "What would break if you removed the compound index on `{ status, createdAt }` from courses?"
+- "How does the refresh token pattern prevent an attacker from using a stolen access token indefinitely?"
+- "Why does the ownership check return 404 instead of 403?"
 
-Choose the one that interests you most. Build it, document it in the README under "Extensions," and be ready to explain the schema and the access control choices.
-
----
-
-## Evaluation
-
-You'll walk through EduFlow in a live conversation — the viva. Expect questions like:
-
-- "A student says they paid but aren't enrolled. Walk me through how you'd diagnose that."
-- "How does your system ensure an instructor can't read another instructor's enrollments?"
-- "What would break at 10,000 concurrent users? What would you fix first?"
-- "Why did you use cursor pagination on the catalogue? What would change if you used offset?"
-- "Explain what happens, step by step, when a student's access token expires and they make a request."
-
-The viva is not a memory test. It's a reasoning test. If you understand every decision you made, you'll answer these without hesitation. If you copied code without understanding it, the answers will stall.
-
-Your learning log is the evidence you understood the work. Bring it.
+Your learning log entries are your preparation. If you wrote genuine answers — not summaries of the chapter, but your own reasoning — you are ready.
 
 ---
 
-## Final checklist
+## Final Definition of Done
 
-- [ ] Architecture diagram exists in `docs/` and is referenced in the README
-- [ ] ERD exists in `docs/` and is referenced in the README
-- [ ] README includes local setup instructions (a new developer can clone and run it)
-- [ ] README includes the API reference table
-- [ ] README includes the key engineering decisions section
-- [ ] Demo video is recorded and linked in the README
-- [ ] Portfolio article is published and linked in the README
-- [ ] The live URL responds to `GET /health` with a valid TLS certificate
-- [ ] Every learning log file (`learning-log/NN-*.md`) is committed and answered
+- [ ] `docs/architecture.md`, `docs/erd.md`, and `docs/api.md` exist and are accurate
+- [ ] A demo video covers the full product loop and is linked from `README.md`
+- [ ] A portfolio write-up is published and linked
 - [ ] The bar-raiser feature is implemented and documented
+- [ ] Every chapter's learning log file is committed
 
-All boxes ticked. You're done. Ship it, share it, and be proud of it — you built something real.
+_EduFlow is shipped. You built a real system, understood every decision you made, and can explain it out loud. That is the whole point._

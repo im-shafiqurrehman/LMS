@@ -1,222 +1,134 @@
-# Deploy — A Real URL on the Internet
+# Deploy
 
-Everything you've built lives on your laptop. This chapter changes that. By the end, EduFlow has a public URL, HTTPS, secrets in environment variables (not in Git), a process manager that restarts on crash, and Nginx sitting in front of Node.js.
-
-This is the part most bootcamps skip. Don't. Deploying something yourself — watching it fail, fixing it, watching it work — teaches you more about how production systems behave than any amount of local development.
+A running app on your laptop is not a product. A running app at a real URL, with HTTPS, that survives a server restart, is.
 
 ---
 
-## The production stack
+## What you are deploying
 
-| Component | Role |
-|---|---|
-| VPS (a small cloud server) | The machine your code runs on |
-| Ubuntu 24.04 | The operating system |
-| Node.js (via nvm) | Your application runtime |
-| PM2 | Process manager — keeps Node running, restarts on crash, logs output |
-| Nginx | Reverse proxy — receives HTTPS traffic, forwards to Node on port 3000 |
-| Let's Encrypt / Certbot | Free, auto-renewing TLS certificates |
-| MongoDB | Running on the same VPS (small projects) or a managed DB (more reliable) |
-| Redis | Running on the same VPS |
-
-For a production system at real scale you'd separate the database to a managed service (MongoDB Atlas) and run Redis on ElastiCache or similar. For this project, same-VPS is simpler and teaches the fundamentals — upgrade when you need it.
+- Express backend (Node.js process)
+- Next.js frontend (Node.js process)
+- MongoDB Atlas (managed cloud database — no need to self-host)
+- Redis (self-hosted on the VPS, or use Upstash for a managed option)
 
 ---
 
-## Provision the VPS
+## The VPS setup
 
-Choose a provider: DigitalOcean Droplet, Hetzner Cloud, or AWS Lightsail are all fine. A 2 vCPU / 4GB RAM instance is enough.
+You need a Linux VPS. Popular cheap options: DigitalOcean Droplets, Hetzner CX11, Vultr. A 2GB RAM, 1 vCPU instance is sufficient for EduFlow at launch.
 
-> **Worth reading:** Search "Linux VPS setup guide Ubuntu" — DigitalOcean's "Initial Server Setup with Ubuntu" guide is the standard reference. It covers creating a non-root user, setting up SSH key authentication, and configuring UFW (the firewall). Read it first.
+**Step 1 — SSH into your server**
 
-Steps (follow the DigitalOcean guide for these, not this chapter):
+```
+ssh root@YOUR_SERVER_IP
+```
 
-1. Create the VPS with your SSH public key
-2. SSH in as root, create a deploy user, disable root SSH login
-3. Configure UFW: allow SSH (22), HTTP (80), HTTPS (443); deny everything else
-4. Set the hostname
+Create a non-root user and disable root SSH login before anything else. Search "secure new VPS setup" for the standard hardening checklist.
 
----
+**Step 2 — Install Node.js and PM2**
 
-## Install the runtime
-
-SSH into the VPS as your deploy user:
-
-```bash
-# Install nvm (Node Version Manager)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-source ~/.bashrc
-
-# Install Node (use the same major version as your local machine)
-nvm install 20
-nvm use 20
-
-# Install PM2 globally
+```
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
 npm install -g pm2
 ```
 
----
+**Step 3 — Install Nginx**
 
-## Clone and configure the application
-
-```bash
-# On the VPS
-git clone https://github.com/yourusername/eduflow.git
-cd eduflow
-npm install --production
 ```
-
-Create `.env` on the VPS with production values. This is the one time you manually create this file — on the server, not in Git. Use `nano .env` and paste the production values. Production values differ from development:
-
-- `NODE_ENV=production`
-- A production `DATABASE_URL` pointing to the local or managed MongoDB
-- New, long, random `JWT_SECRET` and `JWT_REFRESH_SECRET` (generate with `openssl rand -base64 64`)
-- Your real Cloudinary, Resend, and Stripe keys
-- `FRONTEND_URL` pointing to your frontend's production domain
-
-Run database migrations:
-
-```bash
-npx prisma migrate deploy
-npx prisma db seed  # optional — seed categories and an admin user
+sudo apt install -y nginx
+sudo systemctl enable nginx
 ```
 
 ---
 
-## PM2 process management
+## Environment variables in production
 
-Create `ecosystem.config.js` in the project root:
+Never commit `.env` to Git. On the server, create the `.env` file by hand:
 
-```js
-module.exports = {
-  apps: [{
-    name: 'eduflow-api',
-    script: 'src/server.js',
-    instances: 2,            // 2 processes for a 2-core VPS
-    exec_mode: 'cluster',    // Node cluster mode — share the port
-    env_production: {
-      NODE_ENV: 'production'
-    },
-    error_file: 'logs/err.log',
-    out_file: 'logs/out.log',
-    log_date_format: 'YYYY-MM-DD HH:mm:ss'
-  }]
-};
+```
+sudo nano /home/eduflow/backend/.env
 ```
 
-Start the application:
+Fill in production values. Your `JWT_SECRET` must be a cryptographically random string, not the development placeholder. Generate one:
 
-```bash
-pm2 start ecosystem.config.js --env production
-pm2 save                  # save process list — survives server restarts
-pm2 startup               # generates a systemd startup command — run the output command
+```
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-Verify it's running:
+---
 
-```bash
-pm2 list
-pm2 logs eduflow-api
+## Start the app with PM2
+
+PM2 is a process manager that keeps your Node app running after SSH disconnects and restarts it if it crashes.
+
+```
+cd /home/eduflow/backend
+pm2 start src/server.js --name eduflow-backend
+pm2 save
+pm2 startup
 ```
 
-The application is now running on port 3000. You can't reach it yet — that's what Nginx is for.
+For the frontend:
+
+```
+cd /home/eduflow/frontend
+npm run build
+pm2 start npm --name eduflow-frontend -- start
+pm2 save
+```
 
 ---
 
 ## Nginx reverse proxy
 
-Install Nginx:
-
-```bash
-sudo apt install nginx
-```
-
-Create `/etc/nginx/sites-available/eduflow`:
+Nginx sits in front of your Node processes and handles HTTPS termination. Create `/etc/nginx/sites-available/eduflow`:
 
 ```nginx
 server {
-    listen 80;
-    server_name api.yourdomain.com;
+    server_name yourdomain.com www.yourdomain.com;
+
+    location /api {
+        proxy_pass         http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+    }
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass         http://localhost:3001;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header   Host $host;
     }
 }
 ```
 
-Enable and test:
+Enable it and test:
 
-```bash
+```
 sudo ln -s /etc/nginx/sites-available/eduflow /etc/nginx/sites-enabled/
-sudo nginx -t       # test the config — must say "syntax is ok"
+sudo nginx -t
 sudo systemctl reload nginx
 ```
-
-Point `api.yourdomain.com` DNS A record to your VPS IP. Wait for propagation (a few minutes to an hour).
 
 ---
 
 ## HTTPS with Let's Encrypt
 
-```bash
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d api.yourdomain.com
+```
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
 ```
 
-Certbot automatically modifies your Nginx config to add HTTPS and set up auto-renewal. Verify:
-
-```bash
-curl https://api.yourdomain.com/health
-# Should return: {"status": "ok"}
-```
-
----
-
-## Smoke tests in production
-
-Run every endpoint category once against the production URL:
-
-```bash
-# Health
-curl https://api.yourdomain.com/health
-
-# Register + verify + login
-curl -X POST https://api.yourdomain.com/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "smoke@test.com", "password": "SmokePa55!"}'
-
-# Catalogue
-curl https://api.yourdomain.com/api/courses
-```
-
-Check PM2 logs for any errors:
-
-```bash
-pm2 logs eduflow-api --lines 50
-```
+Certbot modifies the Nginx config to add HTTPS and sets up automatic renewal.
 
 ---
 
 ## Definition of Done
 
-- [ ] `https://api.yourdomain.com/health` returns `{"status": "ok"}` from a public network
-- [ ] The TLS certificate is valid (browser shows the lock icon; no warnings)
-- [ ] `pm2 list` shows the application running in cluster mode
-- [ ] The `.env` file is not in Git — secrets are only on the server
-- [ ] `pm2 startup` has been run — the application restarts automatically on server reboot (test: `sudo reboot`, wait, SSH back in, `pm2 list`)
-- [ ] Database migrations ran successfully (`npx prisma migrate status` shows no pending migrations)
-- [ ] Nginx access logs (`sudo tail -f /var/log/nginx/access.log`) show incoming requests
-
-Write in `learning-log/15-deploy.md`:
-
-1. Why does Node.js run behind Nginx rather than listening directly on port 80/443?
-2. What does PM2's cluster mode do, and how does it relate to Node.js being single-threaded?
-3. Why is `npx prisma migrate deploy` used in production instead of `npx prisma migrate dev`?
+- [ ] The backend is reachable at `https://yourdomain.com/api/health` and returns `{ "status": "ok" }`
+- [ ] The frontend loads at `https://yourdomain.com`
+- [ ] HTTPS is enabled; HTTP redirects to HTTPS
+- [ ] `pm2 list` shows both processes running
+- [ ] Restarting the server (`sudo reboot`) — both processes restart automatically via `pm2 startup`
+- [ ] No secrets in `git log` — all sensitive values come from the server's `.env` file

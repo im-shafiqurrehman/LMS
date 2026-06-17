@@ -1,109 +1,158 @@
-# Why MongoDB?
+# Why MongoDB and Mongoose?
 
-Before you write a line of application code, you choose a database. That choice shapes every other decision — the schema, the queries, the performance work, the migrations. Getting it wrong early means expensive rewrites later. So let's make it deliberately.
+Before you write a line of application code, you choose a database and decide how your application will talk to it. These two choices shape every other decision — the schema, the queries, the performance work. Getting them wrong early means expensive rewrites later. So let us make them deliberately.
 
 ## What EduFlow's data actually looks like
 
-An LMS has relationships everywhere. A `Course` has many `Lessons`. A `User` can enroll in many `Courses`, and a `Course` can have many enrolled users — that's a many-to-many relationship with extra data (enrollment date, payment amount). A `ProgressRecord` belongs to both a `User` and a `Lesson`. A `Certificate` belongs to a `User` and a `Course`. A `Question` belongs to a `Course` and a `User`, and an `Answer` belongs to a `Question` and an `Instructor`.
+An LMS has relationships everywhere. A `Course` has many `Lessons`. A `User` can enroll in many `Courses`, and a `Course` can have many enrolled users — that is a many-to-many relationship with extra data (enrollment date, payment amount). A `ProgressRecord` belongs to both a `User` and a `Lesson`. A `Certificate` belongs to a `User` and a `Course`. A `Question` belongs to a `Course` and a `User`, and an `Answer` belongs to a `Question` and an `Instructor`.
 
-These relationships need to be enforced — a lesson without a course is orphaned data; an enrollment without a user is a payment record attached to nobody. The question is: where should that enforcement live? In the database schema itself, or in the application code?
+These relationships need to be managed — a lesson without a course is orphaned data; an enrollment without a user is a payment record attached to nobody. The question is: where should that structure live? In the database schema itself, or in the application layer?
 
-## Why MongoDB (without an ORM)
+## Why MongoDB
 
-**MongoDB** is a document database that stores data as JSON-like documents. Unlike SQL databases, it doesn't enforce foreign key constraints at the database level. Instead, it gives you **schema flexibility and horizontal scalability** — you can add fields without migrations, and you can shard data across servers naturally. This is perfect for systems that evolve rapidly and scale to many users.
+**MongoDB** is a document database that stores data as JSON-like documents. Unlike SQL databases, it does not enforce foreign key constraints at the database level. Instead, it gives you **schema flexibility and horizontal scalability** — you can add fields without migrations, and you can shard data across servers naturally. This is well-suited for systems that evolve rapidly and scale to many users.
 
-**Why no ORM?** We're using the native MongoDB driver directly. Here's why:
+For EduFlow, MongoDB is the right choice because:
 
-1. **Simplicity.** ORMs add abstraction layers that hide what's actually happening. With the native driver, you write queries that map directly to MongoDB operations. When something goes wrong, you see the actual query, not an ORM-generated one.
+1. **Schema evolution.** As you build, you will discover new fields — referral codes, course tags, video metadata. MongoDB lets you add them without downtime migrations.
+2. **Document-shaped data.** Lessons with videos, enrollments with payment details, courses with rich metadata — these are naturally stored as documents, structured exactly how your application needs them.
+3. **Horizontal scale.** When EduFlow grows, you can shard users by geography. MongoDB sharding is a natural fit.
 
-2. **Performance.** Every ORM adds overhead — query translation, result mapping, relationship loading. The native driver has zero overhead. You get exactly what MongoDB returns, no transformation layers.
+> **Worth reading:** Search "MongoDB vs relational databases" — the official MongoDB comparison guide explains the trade-offs clearly.
 
-3. **Learning.** Understanding MongoDB's native query language makes you a better developer. You learn about indexes, aggregation pipelines, and document structure directly. These skills transfer regardless of which language or framework you use later.
+## Why Mongoose as the ODM
 
-4. **Control.** ORMs make assumptions about how to structure your data. With the native driver, you decide when to embed documents vs. reference them. You control the query shape, the projection, and the aggregation strategy.
+MongoDB is schemaless at the database level — it will accept any document shape you throw at it. This is powerful, but it creates a problem: nothing stops a bug in your code from writing `{ emal: "alice@example.com" }` (a typo) or `{ price: "free" }` (a string where a number belongs) directly into the database. Once bad data is in, cleaning it is painful.
 
-5. **No migration hell.** MongoDB is schemaless at the database level. With an ORM, you still need to track schema changes in migration files. Without an ORM, you add fields to your documents as needed — the database doesn't care.
+**Mongoose** (an Object Document Mapper, or ODM) solves this by putting a schema layer in your application code. You define the shape and constraints of each document type once, and Mongoose enforces them before any write reaches MongoDB.
 
-The trade-off is clear: **MongoDB trades database-level guarantees for developer flexibility and horizontal scale. The native driver trades ORM convenience for simplicity, performance, and direct control.**
+### What Mongoose gives you that the native driver does not
 
-For EduFlow, this is the right choice because:
+**1. Schema definition and built-in validation.**
+You define a schema once — the fields, their types, whether they are required, their default values — and Mongoose validates every document against it before saving. A typo in a field name fails immediately with a clear error, not silently as a new field on every document.
 
-1. **Schema evolution.** As you build, you'll discover new fields: referral codes, course tags, video metadata. MongoDB lets you add them without downtime migrations.
+```js
+// Example shape — you will write this in full in chapter 3.05
+// The schema tells Mongoose: email is required, must be a string,
+// must be unique, and role must be one of these three values.
+const userSchema = new mongoose.Schema({
+  email:        { type: String, required: true, unique: true },
+  passwordHash: { type: String, required: true },
+  role:         { type: String, enum: ['student', 'instructor', 'admin'], default: 'student' },
+});
+```
 
-2. **Horizontal scale.** When EduFlow grows, you'll shard users by geography. MongoDB sharding is a natural fit; PostgreSQL sharding is complex and painful.
+**2. Middleware (hooks).**
+Mongoose lets you run code automatically before or after certain operations. The most useful example in EduFlow: before saving a user, you can hash their password in a `pre('save')` hook. The hash happens automatically on every save and update — you cannot forget to do it in a route handler.
 
-3. **Document-shaped data.** Lessons with videos, enrollments with payment details, courses with rich metadata — these are naturally stored as documents. You structure them exactly how your application needs them.
+```js
+// Shape only — you write this in chapter 3.05
+userSchema.pre('save', async function (next) {
+  if (this.isModified('passwordHash')) {
+    this.passwordHash = await bcrypt.hash(this.passwordHash, 12);
+  }
+  next();
+});
+```
 
-4. **Performance at scale.** The native driver has zero overhead. Every query you write is exactly what MongoDB executes. No hidden N+1 queries, no lazy loading surprises.
+**3. Populate — reference resolution.**
+MongoDB stores references as IDs (a `courseId` field on a Lesson, a `userId` field on an Enrollment). The native driver requires you to make separate queries to resolve those references. Mongoose's `.populate()` method resolves them in a single, readable line:
 
-> **Worth reading:** Search "MongoDB native driver Node.js" — the official MongoDB Node.js driver documentation is excellent. Also read "MongoDB vs relational databases" — the MongoDB comparison guide explains the trade-offs.
+```js
+// Fetch a course and resolve its instructorId into the full User document
+const course = await Course.findById(id).populate('instructorId', 'name email');
+```
+
+Behind the scenes, Mongoose issues the lookup efficiently. You write one line; the database does the work.
+
+**4. Timestamps and virtuals.**
+Setting `{ timestamps: true }` in your schema options adds `createdAt` and `updatedAt` fields automatically — maintained by Mongoose, never forgotten. Virtuals add computed properties that appear in query results but are never persisted to the database.
+
+**5. A query API that reads like your application code.**
+Mongoose's chainable query API — `.find()`, `.findOne()`, `.findById()`, `.sort()`, `.skip()`, `.limit()` — is designed to match how developers think about data, not how MongoDB's raw query format works. The native driver is powerful, but Mongoose's API is clearer and harder to misuse.
+
+## The trade-off
+
+Mongoose adds an abstraction layer on top of MongoDB. That means a small performance overhead per query, and some situations where you need to drop down to the native driver to run operations Mongoose does not expose cleanly (certain aggregation pipelines, bulk writes, and changestreams). For the overwhelming majority of EduFlow's queries, Mongoose is the correct tool. You will use Mongoose throughout this course.
+
+> **Worth reading:** Search "Mongoose vs native MongoDB driver" — the Mongoose documentation itself has a section explaining when to use each.
 
 ---
 
 ## The schema at a glance
 
-Here is the data model you'll build across the course — the logical picture of how documents relate:
+Here is the data model you will build across the course — the logical picture of how Mongoose models relate:
 
 ```
 User
-  _id, email, password_hash, role (student | instructor | admin)
-  email_verified_at
-  created_at
+  _id, email, passwordHash, role (student | instructor | admin)
+  emailVerifiedAt, verificationOtp, otpExpiresAt
+  timestamps (createdAt, updatedAt)
 
 InstructorProfile
-  _id, user_id (→ User), bio, photo_url, is_approved
+  _id, userId (→ User), bio, photoUrl, isApproved
+  timestamps
 
 Course
-  _id, instructor_id (→ User), title, slug, description
-  cover_image_url, price, category, status (draft | pending | published | rejected)
-  created_at, updated_at
+  _id, instructorId (→ User), title, slug, description
+  coverImageUrl, price, category, status (draft | pending | published | rejected)
+  totalLessons, totalDuration
+  timestamps
 
 Lesson
-  _id, course_id (→ Course), title, video_url, duration_seconds
+  _id, courseId (→ Course), title, videoUrl, durationSeconds
   position (order within the course)
+  timestamps
 
 Enrollment
-  _id, student_id (→ User), course_id (→ Course)
-  amount_paid, stripe_payment_intent_id
-  enrolled_at
+  _id, studentId (→ User), courseId (→ Course)
+  amountPaid, stripePaymentIntentId
+  enrolledAt
 
 ProgressRecord
-  _id, enrollment_id (→ Enrollment), lesson_id (→ Lesson)
-  completed_at
+  _id, enrollmentId (→ Enrollment), lessonId (→ Lesson)
+  completedAt
 
 Certificate
-  _id, enrollment_id (→ Enrollment)
-  pdf_url, issued_at
+  _id, enrollmentId (→ Enrollment)
+  pdfUrl, issuedAt
 
 Question
-  _id, course_id (→ Course), user_id (→ User)
-  content, created_at
+  _id, courseId (→ Course), userId (→ User)
+  content, timestamps
 
 Answer
-  _id, question_id (→ Question), instructor_id (→ User)
-  content, created_at
+  _id, questionId (→ Question), instructorId (→ User)
+  content, timestamps
 
-Notification
-  _id, user_id (→ User), type, payload (JSON), read_at
+RefreshToken
+  _id, tokenHash, userId (→ User)
+  expiresAt, timestamps
 ```
 
-Notice what's here and what isn't. The `amount_paid` on `Enrollment` is a price snapshot — it records what the student actually paid, not the course's current price. This is the same price-snapshot pattern you'll see in any order system: if the instructor changes the price next month, old enrollments keep their original amount.
-
-The `Question` and `Answer` collections enable the Q&A system — students ask questions about courses, and instructors answer them. This is a critical feature for learning engagement.
+Notice the `amountPaid` on `Enrollment`. This is a price snapshot — it records what the student actually paid, not the course's current price. If the instructor changes the price next month, old enrollments keep their original amount.
 
 ---
 
-## How relationships work in MongoDB (without an ORM)
+## How references work in Mongoose
 
-Without an ORM, you manage relationships manually. Here's the pattern:
+MongoDB stores a reference as an ObjectId field. You access the referenced document with `.populate()`:
 
-**One-to-many (Course → Lessons):** Store the `course_id` in each Lesson document. Query: `db.lessons.find({ course_id: courseId })`
+```js
+// One-to-many (Course → Lessons): store courseId on each Lesson
+// Query all lessons in a course:
+const lessons = await Lesson.find({ courseId: course._id });
 
-**Many-to-many (Users ↔ Courses via Enrollments):** Create an Enrollment collection with both `student_id` and `course_id`. Query: `db.enrollments.find({ student_id: userId })`
+// Many-to-many (Users ↔ Courses via Enrollments):
+// Store both studentId and courseId on each Enrollment
+const enrollments = await Enrollment.find({ studentId: user._id });
 
-**Embedded vs. referenced:** When related data is small and rarely changes alone, embed it. For example, a Course's tags could be an array inside the Course document. When related data is large or changes independently, reference it by ID. Lessons are referenced by course_id because they're substantial entities.
+// Resolve references:
+const course = await Course.findById(id)
+  .populate('instructorId', 'name email');
+```
 
-You'll implement these patterns throughout the course. The native driver gives you full control over when to embed vs. reference.
+When to embed vs reference: embed data that is small, rarely changes independently, and is always needed with its parent (for example, a lesson's position inside a course could be an embedded array). Reference data that is substantial, changes on its own, or is queried independently (a `User` document is referenced by many other documents — it is never embedded).
 
 ---
 
@@ -111,9 +160,10 @@ You'll implement these patterns throughout the course. The native driver gives y
 
 Before moving to the next chapter, you should be able to explain:
 
-- [ ] Why EduFlow uses MongoDB, and what advantages document storage brings (hint: flexibility, horizontal scale)
-- [ ] Why we use the native MongoDB driver instead of an ORM (hint: simplicity, performance, learning, control)
-- [ ] How relationships work in MongoDB without an ORM (hint: store IDs, query by those IDs, choose embed vs. reference)
-- [ ] When you might embed data in MongoDB vs. reference it (hint: size, change frequency, query patterns)
+- [ ] Why EduFlow uses MongoDB, and what advantages document storage brings
+- [ ] Why we use Mongoose instead of the native MongoDB driver, and what Mongoose adds
+- [ ] What Mongoose schema validation does and why it matters at the application level
+- [ ] How Mongoose's `.populate()` resolves references, and when you would use it
+- [ ] When to embed data in a MongoDB document vs reference it by ObjectId
 
 Write your answers in `learning-log/02-why-mongodb.md` and commit before continuing.

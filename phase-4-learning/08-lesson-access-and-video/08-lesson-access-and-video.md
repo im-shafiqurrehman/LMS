@@ -1,187 +1,101 @@
 # Lesson Access and Video Delivery
 
-A student enrolls in a course and sees the lesson list. They click a lesson. What happens next is not as simple as returning a video URL from the database — because that URL, once returned, is shareable. Anyone with the link can watch the lesson without paying. This chapter builds the access layer that prevents that.
+A student who has enrolled in a course can now watch its lessons. A student who has not enrolled must not be able to — not by navigating to the URL, not by guessing the lesson ID. This chapter builds the access control and the video delivery pipeline.
 
 ---
 
-## The threat model
+## The access check
 
-A naive implementation:
+Before returning any lesson content, the backend must verify enrollment. This check lives in the service, not a middleware — it is per-resource, not per-route.
 
-```json
-GET /api/lessons/uuid
-→ { "videoUrl": "https://res.cloudinary.com/eduflow/video/upload/v1234/abc.mp4" }
-```
+```js
+// In lessons.service.js — shape only
+async function getLesson(lessonId, requestingStudentId) {
+  const lesson = await Lesson.findById(lessonId);
+  if (!lesson) throw new NotFoundError('Lesson not found');
 
-A student enrolls, gets this URL, posts it to a forum. Anyone clicks it and watches the lesson — forever, for free. The URL has no expiry, no access check, no relationship to enrollment status.
+  const enrollment = await Enrollment.findOne({
+    studentId: requestingStudentId,
+    courseId:  lesson.courseId,
+  });
 
-The correct approach is **signed, expiring URLs**. Cloudinary supports them: instead of returning the permanent URL, you generate a short-lived signed URL on demand — valid for, say, 2 hours. After it expires, the link dies. Someone who shares the link gets a playback error two hours later. You can also add additional restrictions (IP, referer header) if needed.
+  if (!enrollment) {
+    throw new ForbiddenError('You are not enrolled in this course');
+  }
 
-> **Topics to read — protecting your video lessons:**
->
-> - **Signed / expiring URLs** — search "Cloudinary signed URLs Node.js." A signed URL includes a cryptographic signature and an expiry timestamp; Cloudinary validates both before serving the file. *Why: you're about to serve paid lessons and need to stop link-sharing.*
-> - **Access control on media** — the pattern of generating the signed URL only after an authorization check. *Why: only paying students should ever receive the signed URL, let alone the file itself.*
-
----
-
-## The ProgressRecord schema
-
-Add to `prisma/schema.prisma`:
-
-```prisma
-model ProgressRecord {
-  id           String     @id @default(uuid())
-  enrollmentId String
-  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
-  lessonId     String
-  lesson       Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  completedAt  DateTime   @default(now())
-
-  @@unique([enrollmentId, lessonId])
-  @@index([enrollmentId])
+  return lesson;
 }
 ```
 
-Run: `npx prisma migrate dev --name add-progress-record`
+✅ A student enrolled in course A can fetch lessons in course A.
+✅ A student not enrolled in course A receives 403 when attempting to fetch any lesson in course A.
+❌ Do not skip this check for any lesson endpoint. URL-guessing is a real attack vector — a lesson ID in the URL does not prove enrollment.
+
+---
+
+## Video delivery via Cloudinary
+
+Storing video files in MongoDB or on your Express server is never the right approach. A 500MB video file occupies server RAM for every concurrent request, blocks the event loop, and generates enormous egress charges on a standard VPS. You hand video storage and delivery off to Cloudinary — a specialist CDN built for media.
+
+The workflow:
+
+1. Instructor uploads a video to Cloudinary directly from the frontend (using Cloudinary's upload widget with a signed upload preset).
+2. Cloudinary stores the video and returns a `public_id`.
+3. The backend stores the `public_id` in the lesson's `videoUrl` field.
+4. When an enrolled student requests a lesson, the backend generates a **signed, expiring URL** from the `public_id` and returns it.
+
+The signed URL matters. A plain Cloudinary URL never expires — once shared, anyone can download the video forever. A signed URL expires after a short window (e.g. 15 minutes), so a shared link quickly becomes useless.
+
+```js
+import { v2 as cloudinary } from 'cloudinary';
+
+// Generate a signed URL expiring in 15 minutes
+const signedUrl = cloudinary.url(lesson.videoUrl, {
+  resource_type: 'video',
+  sign_url: true,
+  expires_at: Math.floor(Date.now() / 1000) + 900, // 15 minutes
+});
+```
+
+Install Cloudinary:
+
+```
+npm install cloudinary
+```
+
+Add Cloudinary config keys to `.env` and `config/index.js`.
+
+> **Topics to read — protecting your video lessons**
+>
+> - **Signed / expiring URLs** — search "Cloudinary signed URLs" for the official documentation. A signed URL stops working after the expiry time, so a student cannot share a permanent download link.
+> - **Access control on media** — understanding why the URL alone is not enough: the access check on your backend is what determines who receives a URL in the first place.
 
 ---
 
 ## Scaffold the lessons module
 
-```bash
+```
 mkdir -p src/modules/lessons
 touch src/modules/lessons/lessons.routes.js
 touch src/modules/lessons/lessons.service.js
 ```
 
-Mount at `/api/lessons` in `app.js`.
-
----
-
-## List lessons for a course
-
-```
-GET /api/courses/:courseId/lessons
-```
-
-**Public** — anyone can see the lesson list for a published course. This powers the course detail page: the student sees lesson titles and durations before enrolling.
-
-The response must **not** include `videoUrl` — only metadata:
-
-```json
-{
-  "lessons": [
-    {
-      "id": "uuid",
-      "title": "Setting up your environment",
-      "position": 1,
-      "durationSeconds": 480,
-      "isFree": true,
-      "isCompleted": false  // always false for unauthenticated users
-    }
-  ]
-}
-```
-
-For authenticated enrolled students, `isCompleted` reflects their actual progress. For everyone else, it's `false`.
-
-The service function takes an optional `studentId`. If provided, join against `ProgressRecord` to compute `isCompleted` per lesson.
-
-✅ The query must not leak `videoUrl` at any point — exclude the field in the Prisma `select`.
-
----
-
-## Get a lesson (with video access)
-
-```
-GET /api/lessons/:id
-```
-
-Protected: `authenticate` only (role check happens in the service).
-
-The service must:
-
-1. Find the lesson and its parent course
-2. If the lesson is `isFree: true` — generate and return the signed URL (free preview)
-3. If the lesson is `isFree: false`:
-   - Check enrollment: call `isEnrolled(req.user.id, course.id)` from the enrollments service
-   - If not enrolled — return 403: "Enroll in this course to access this lesson."
-   - If enrolled — generate and return the signed URL
-
-**Generating the signed URL:**
-
-```js
-// Shape — use Cloudinary SDK to generate a signed URL
-// cloudinary.url(publicId, {
-//   sign_url: true,
-//   expires_at: Math.floor(Date.now() / 1000) + 7200,  // 2 hours from now
-//   resource_type: 'video'
-// })
-```
-
-You need the Cloudinary **public ID** of the video (the path within your Cloudinary account), not the full URL. Store the public ID when uploading (in the previous chapter you stored the full URL; extract and store the public ID instead, or derive it from the URL).
-
-Response:
-
-```json
-{
-  "lesson": {
-    "id": "uuid",
-    "title": "Setting up your environment",
-    "position": 1,
-    "durationSeconds": 480,
-    "signedVideoUrl": "https://res.cloudinary.com/eduflow/video/upload/s--XXXX--/e_/v1234/abc.mp4",
-    "urlExpiresAt": "2025-01-01T14:00:00Z"
-  }
-}
-```
-
-✅ Test with an enrolled student — receives the signed URL.
-✅ Test with an unenrolled authenticated student — receives 403.
-✅ Test with no auth header — receives 401.
-✅ Test the signed URL after 2 hours (or reduce expiry temporarily to 10 seconds for testing) — playback fails.
-
----
-
-## Mark a lesson complete
-
-```
-POST /api/lessons/:id/complete
-```
-
-Protected: `authenticate`.
-
-The service must:
-
-1. Verify the user is enrolled in the lesson's course (same check as above)
-2. Upsert a `ProgressRecord` — `@@unique([enrollmentId, lessonId])` prevents duplicates
-
-After creating the progress record, check if all lessons in the course now have a completion record for this enrollment. If yes, trigger certificate generation (next chapter).
-
-```js
-// Shape — check if all lessons are complete
-const totalLessons = await prisma.lesson.count({ where: { courseId } });
-const completedLessons = await prisma.progressRecord.count({ where: { enrollmentId } });
-
-if (completedLessons >= totalLessons) {
-  // trigger certificate generation
-}
-```
+| Method | Path | Access | What it does |
+|--------|------|--------|-------------|
+| `GET` | `/api/courses/:courseId/lessons` | Enrolled student | List all lessons in a course (no video URLs) |
+| `GET` | `/api/lessons/:lessonId` | Enrolled student | Get a single lesson with a signed video URL |
 
 ---
 
 ## Definition of Done
 
-- [ ] `GET /api/courses/:id/lessons` returns lesson metadata without `videoUrl` for all users
-- [ ] `isCompleted` is accurate for enrolled students and `false` for everyone else
-- [ ] `GET /api/lessons/:id` returns a signed Cloudinary URL for enrolled students
-- [ ] An unenrolled authenticated student receives 403 on a paid lesson
-- [ ] A free preview lesson (`isFree: true`) returns a signed URL to any authenticated user
-- [ ] `POST /api/lessons/:id/complete` creates a progress record; a second call on the same lesson does not duplicate it
-- [ ] The signed URL cannot be used after it expires
+- [ ] `GET /api/lessons/:lessonId` returns 403 for a valid token belonging to a non-enrolled student
+- [ ] `GET /api/lessons/:lessonId` returns the lesson with a signed Cloudinary URL for an enrolled student
+- [ ] The signed URL includes an expiry (verify by inspecting the URL signature parameters)
+- [ ] An unenrolled student cannot access lesson content by guessing a lesson ID
 
-Write in `learning-log/08-lesson-access-and-video.md`:
+Write in `learning-log/08-lesson-access.md`:
 
-1. Why does the lesson detail endpoint generate a signed URL rather than returning the stored video URL directly?
-2. Where does the access check live — in middleware, or in the service function? Why?
-3. What does `isFree` enable, and how does it change the access logic?
+1. Why does the enrollment check live in the service rather than a middleware?
+2. What is a signed URL and why is it necessary for paid video content?
+3. Why should you never store video files in MongoDB or serve them from your Express server?

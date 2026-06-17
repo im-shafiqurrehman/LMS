@@ -1,132 +1,90 @@
 # Caching and Performance
 
-The course catalogue is the most-read page in EduFlow. It's hit by every visitor — logged in or not — and it reads the same data over and over: published courses, their categories, their instructor names, their enrollment counts. Most of the time, this data hasn't changed. Yet every request hits the database and runs the full query.
-
-Caching solves this by storing the result of an expensive operation and returning the stored result for subsequent identical requests. Done right, it makes a frequently-read page 10–50x faster. Done wrong, it serves stale data to users and is harder to debug than just not having a cache.
-
-This chapter adds Redis caching to the catalogue endpoint and teaches you the discipline that makes caching correct: **invalidation**.
+The catalogue page is the most-read endpoint in EduFlow. Every visitor — logged in or not — hits it. It also changes infrequently: a course does not get published every second. This is the textbook use case for caching.
 
 ---
 
-## What caching is and what it costs you
+## What is a cache and why it matters here
 
-A cache is a faster storage layer that sits in front of slower storage. Redis is an in-memory key-value store — reads take microseconds vs milliseconds for a database query. For a catalogue page with millions of visits, the difference is enormous.
+A cache is a fast, temporary store of expensive computation results. Instead of running a MongoDB query on every catalogue request, you run it once, store the result in Redis (an in-memory store), and return the cached result on subsequent requests.
 
-The cost: **cache coherence**. When a course is published, updated, or unpublished, the catalogue cache has old data. If you don't invalidate the cache at that moment, users see stale course listings. The rule is simple but often forgotten: **every write that changes cached data must also clear or update the cache.**
-
-There is a second cost: **complexity**. A bug in the cache layer can silently serve wrong data. A missing invalidation means users see ghost courses. Treat cache logic with the same care as database logic — it affects correctness, not just performance.
-
-> **Worth reading:** Phil Karlton famously said "there are only two hard things in computer science: cache invalidation and naming things." Search "cache invalidation strategies" — the Martin Fowler article on cache patterns is worth reading before you implement.
+The trade-off: a cache may return **stale data** — results that were true a moment ago but have since changed. For a course catalogue, stale data for 5 minutes is acceptable. For a bank balance, it is not. Know your tolerance.
 
 ---
 
 ## Redis setup
 
-You already have Redis running via Docker Compose. Install the client:
+Install the Redis client:
 
-```bash
+```
 npm install ioredis
 ```
 
-Configure in `src/lib/redis.js`:
+Create `src/lib/redis.js`:
 
 ```js
-// Create an ioredis client using config.redisUrl
-// Handle connection errors (log them; don't crash the server)
-// Export as `redis`
-```
+// src/lib/redis.js — shape only
+import Redis from 'ioredis';
+import { config } from '../config/index.js';
 
-The connection error handling is important: if Redis goes down, the catalogue should still work — it just falls back to hitting the database. Your caching code must handle Redis failures gracefully (try/catch around every Redis operation).
+export const redis = new Redis(config.redisUrl);
+
+redis.on('error', (err) => console.error('Redis error:', err));
+```
 
 ---
 
-## Caching the catalogue
+## The cache-aside pattern
 
-The cache key strategy for the catalogue must encode all the parameters that affect the result:
+The pattern for caching a read operation:
 
-```
-catalogue:category=frontend:minPrice=0:maxPrice=100:cursor=uuid:limit=20
-```
-
-Build the key from the sorted, serialised query parameters so different filter combinations get different cache entries, and the same parameters always produce the same key.
-
-In `courses.service.js`, wrap the catalogue query with cache logic:
+1. Check the cache first: `const cached = await redis.get(cacheKey)`.
+2. If the cache has a value, return it immediately — no database query.
+3. If not, query the database, store the result in the cache with a TTL (time-to-live), and return it.
 
 ```js
-// Cache-aside pattern — shape
-async function getCatalogue(filters) {
-  const cacheKey = buildCatalogueKey(filters);
+// In catalogue service — shape only
+const cacheKey = `catalogue:${JSON.stringify(filters)}`;
 
-  // 1. Try to read from cache
-  const cached = await redis.get(cacheKey);
-  if (cached) return JSON.parse(cached);
+const cached = await redis.get(cacheKey);
+if (cached) return JSON.parse(cached);
 
-  // 2. Cache miss — query the database
-  const result = await queryCatalogue(filters);
+const courses = await Course.find(...).populate(...);
 
-  // 3. Store in cache with a TTL (time to live)
-  await redis.set(cacheKey, JSON.stringify(result), 'EX', 300); // 5 minutes
-
-  return result;
-}
+await redis.set(cacheKey, JSON.stringify(courses), 'EX', 300); // 5-minute TTL
+return courses;
 ```
-
-A 5-minute TTL means stale data lives for at most 5 minutes even if invalidation fails. Choose the TTL based on how often the data changes and how stale is acceptable.
-
-✅ Test: make the same catalogue request twice. The second should be noticeably faster (log timing in the service layer).
-✅ Verify in Redis: `redis-cli keys "catalogue:*"` should show the cached key.
 
 ---
 
 ## Cache invalidation
 
-Every time a course's status changes to or from `PUBLISHED`, the catalogue cache must be cleared. The cleanest approach: **invalidate by prefix**. All catalogue cache keys start with `catalogue:`. When a course is published or unpublished, delete every key matching `catalogue:*`.
+A 5-minute TTL means stale data for up to 5 minutes. For most catalogue changes this is acceptable. But when a new course is published or an existing course is updated, you may want to clear the cache immediately.
+
+Invalidation strategy: when a course's status changes to `published`, delete all catalogue cache keys:
 
 ```js
-// Invalidate all catalogue cache entries
+// After a course is published — shape only
 const keys = await redis.keys('catalogue:*');
-if (keys.length > 0) {
-  await redis.del(...keys);
-}
+if (keys.length) await redis.del(keys);
 ```
 
-Call this from:
-- `POST /instructor/courses/:id/submit` (course submitted for review — pending courses don't appear in catalogue, so no invalidation needed here, but keep it for when rejection→publish cycles matter)
-- Admin course approval (when a course transitions to `PUBLISHED`)
-- Admin course rejection (when a `PUBLISHED` course is suspended)
+✅ Use a namespace prefix (`catalogue:*`) so you can invalidate all catalogue variants at once.
+❌ Do not skip invalidation for status changes — a newly published course should appear in the catalogue immediately, not after 5 minutes.
 
-✅ Test the invalidation: cache the catalogue, publish a new course through the admin route, then request the catalogue again. The new course must appear — it's not served from the stale cache.
-
----
-
-## Fixing N+1 queries with `include`
-
-You already learned the N+1 pattern in the catalogue chapter. Now audit the rest of your codebase. Run Prisma's query logging temporarily:
-
-```js
-const prisma = new PrismaClient({ log: ['query'] });
-```
-
-Then make requests to:
-- `GET /api/instructor/courses` (the instructor's course list)
-- `GET /api/enrollments/my` (the student's enrollment list)
-- `GET /api/courses/:id/lessons` (lesson list with progress)
-
-In each response, count the logged queries. More than 1–2 queries for a list endpoint is a red flag. For each N+1 you find, fix it with `include` or `select` in the Prisma query, then re-verify the query count drops to 1.
+> **Interesting to read.** Facebook at its peak ran Memcached (similar to Redis) with hundreds of servers holding terabytes of cached data. Their 2013 paper "Scaling Memcache at Facebook" describes the challenges of cache invalidation at that scale — search it when you deploy.
 
 ---
 
 ## Definition of Done
 
-- [ ] `GET /api/courses` reads from Redis on cache hits (verify by checking Redis keys)
-- [ ] A cache miss queries the database and stores the result with a 5-minute TTL
-- [ ] Publishing or unpublishing a course invalidates the catalogue cache; the next request reflects the change
-- [ ] Redis connection failure does not crash the server — the catalogue falls back to a database query
-- [ ] No N+1 queries exist on the catalogue, instructor course list, or student enrollment list endpoints (verified with Prisma query logging)
+- [ ] A catalogue request whose results are cached returns the cached value (verify by checking Redis with `redis-cli keys "catalogue:*"`)
+- [ ] A catalogue request after cache expiry queries the database and refreshes the cache
+- [ ] Publishing a course clears the catalogue cache
+- [ ] Redis connection errors do not crash the server — the service falls back to the database
 
-Write in `learning-log/11-caching-and-performance.md`:
+Write in `learning-log/11-caching.md`:
 
-1. What is the cache-aside pattern? Walk through a cache hit and a cache miss step by step.
-2. What is cache invalidation, and what goes wrong if you skip it?
-3. What does TTL mean and why does it exist even when you have explicit invalidation?
-4. What would happen if the Redis key prefix strategy used different key structures for the same request (e.g. sorting parameters differently) — what bug would that introduce?
+1. What is cache staleness, and how did you handle it in EduFlow?
+2. What is the cache-aside pattern? Draw the decision flow.
+3. Why is deleting `catalogue:*` keys on publish the right invalidation strategy here?

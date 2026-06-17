@@ -1,45 +1,50 @@
-# Learning Log — Template
+# Learning Log — Chapter Template
 
-Copy this file for each chapter. Name it `NN-chapter-name.md` where `NN` matches the chapter number.
-
-Example: `learning-log/03-authentication.md`
+Copy this file for each chapter. Rename it to `NN-chapter-name.md` (e.g. `03-authentication.md`). Write your answers before moving to the next chapter. Commit this file.
 
 ---
 
-## Chapter: [Chapter Name]
+## Chapter: [Name]
 
-**Completed on:** _date_
-
-**Time spent:** _hours_
+**Date completed:**
 
 ---
 
-## Answers to chapter questions
+## Key decisions
 
-_Write your answers here. Use your own words — not copied from the chapter. If something is still blurry, say so and describe what specifically is unclear._
+For each major decision the chapter made, answer:
 
-### Q1:
-
-### Q2:
-
-### Q3:
-
-(Add more as needed for the chapter)
+1. What decision was made?
+2. What was the alternative, and why was the alternative rejected?
+3. What would break if you reversed this decision?
 
 ---
 
-## What surprised me
+## Concepts in your own words
 
-_Something you didn't expect. Could be a bug you hit, a concept that clicked differently than expected, or a decision that seemed obvious until it wasn't._
+For each concept the chapter taught, write 2–4 sentences that explain it as if you were telling a colleague who has not read the chapter:
 
----
-
-## What I'd do differently
-
-_If you were starting this chapter again, what would you approach differently? This is the reflection that makes the viva answer natural._
+- [Concept 1]:
+- [Concept 2]:
+- [Concept 3]:
 
 ---
 
-## One thing I want to read more about
+## What was hard
 
-_A topic from this chapter that you want to go deeper on. Name the topic and, if you found a good resource, link it._
+Describe one thing that confused you, and how you resolved it (even if you had to ask for help):
+
+---
+
+## Blurry parts
+
+List anything you are still not fully confident about. Be honest — these are the topics to revisit before the viva:
+
+---
+
+## Definition of Done — ticked boxes
+
+Copy the chapter's Definition of Done checklist here and confirm every box is ticked before you commit this file:
+
+- [ ] Item 1
+- [ ] Item 2

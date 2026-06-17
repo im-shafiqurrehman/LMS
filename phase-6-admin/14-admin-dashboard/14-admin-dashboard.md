@@ -1,159 +1,96 @@
 # Admin Dashboard
 
-Every platform needs an operator — someone who can approve courses, suspend bad actors, and see how the platform is actually doing. The admin dashboard is EduFlow's control panel. It's not customer-facing, so it doesn't need to be beautiful, but it must be correct and complete.
-
-This chapter builds the backend for the admin dashboard: course approval workflow, user management, and platform metrics.
+The admin is the platform operator. They have a bird's-eye view of EduFlow: approving courses before they go live, monitoring platform health, and stepping in when things go wrong.
 
 ---
 
-## Scaffold the admin module
+## The admin-only middleware
 
-```bash
-mkdir -p src/modules/admin
-touch src/modules/admin/admin.routes.js
-touch src/modules/admin/admin.service.js
-```
-
-Mount at `/api/admin` in `app.js`. Every route in this router requires `authenticate` + `authorize('ADMIN')` — applied at the router level, not per-route. Adding authorization to each route individually is a mistake that eventually leaves one route unguarded.
+All admin routes require both `authenticate` (valid token) and `authorize('admin')` (role check):
 
 ```js
-// admin.routes.js — apply auth at router level
-adminRouter.use(authenticate, authorize('ADMIN'));
-// All routes added below this line are automatically protected
+// In all admin routes
+router.use(authenticate, authorize('admin'));
 ```
+
+Apply this at the router level so every route in the admin module is protected automatically.
 
 ---
 
 ## Course approval workflow
 
-### List pending courses
+When an instructor submits a course for review, its status changes from `draft` to `pending`. An admin reviews pending courses and either approves or rejects them.
 
-```
-GET /api/admin/courses/pending
-```
+`GET /api/admin/courses?status=pending`  
+Returns all courses with `status: 'pending'`, populated with instructor details.
 
-Returns all courses with `status = 'PENDING'`. Include instructor name, category, lesson count, and submission date (`updatedAt` when status last changed — you may need to track this explicitly or use `updatedAt` as a proxy).
-
-Paginated (offset pagination is fine here — admins aren't scrolling infinite feeds).
-
-### Approve a course
-
-```
-PUT /api/admin/courses/:id/approve
-```
-
+`POST /api/admin/courses/:id/approve`  
 The service must:
+1. Find the course: `Course.findById(id)`.
+2. Confirm status is `pending` — reject other statuses with 422.
+3. Set `status = 'published'` and call `course.save()`.
+4. Clear the catalogue cache (invalidate `catalogue:*` Redis keys).
+5. Send a notification email to the instructor (fire-and-forget).
 
-1. Find the course, verify it's `PENDING`
-2. Transition to `PUBLISHED`
-3. Send the "course approved" email to the instructor
-4. Invalidate the catalogue cache (the new course must appear)
-5. Return the updated course
-
-Return 409 if the course isn't `PENDING` — an already-published course shouldn't be accidentally re-published.
-
-### Reject a course
-
-```
-PUT /api/admin/courses/:id/reject
-```
-
-Request body:
-
-```json
-{ "reason": "Video quality is too low. Please re-record with better audio." }
-```
-
-The service must:
-
-1. Find the course, verify it's `PENDING` or `PUBLISHED`
-2. Transition to `REJECTED`
-3. Store the rejection reason (add a `rejectionReason String?` field to the `Course` model if not already present)
-4. Send the "course rejected" email to the instructor with the reason included
-5. Invalidate the catalogue cache if the course was `PUBLISHED`
-
-✅ An instructor can then edit their `REJECTED` course and resubmit it (transition back to `DRAFT`, edit, re-submit to `PENDING`). Verify this flow end-to-end.
-
----
-
-## User management
-
-### List users
-
-```
-GET /api/admin/users
-```
-
-Query params: `role` (filter by role), `search` (partial email match), `page`, `limit`.
-
-Returns user list with `id`, `email`, `role`, `emailVerifiedAt`, `createdAt`, enrollment count.
-
-### Deactivate a user
-
-```
-PUT /api/admin/users/:id/deactivate
-```
-
-Add `deactivatedAt DateTime?` to the `User` model. When set, the `authenticate` middleware must reject the user's tokens with 403 ("Your account has been deactivated").
-
-Add the deactivation check in `authenticate.js`:
-
-```js
-// After jwt.verify() succeeds, look up the user's deactivatedAt
-// If deactivatedAt is not null, return 403
-```
-
-This adds a database lookup to every authenticated request — an important trade-off. Discuss this in your learning log: why is a lookup required here that isn't required for normal auth?
-
-✅ After deactivating a user, their existing access token must be rejected on the next request.
+`POST /api/admin/courses/:id/reject`  
+Body: `{ reason }` (required)  
+Set `status = 'rejected'`. Send rejection email with the reason.
 
 ---
 
 ## Platform metrics
 
-```
-GET /api/admin/metrics
-```
+`GET /api/admin/metrics`
 
 Returns:
 
 ```json
 {
-  "totalUsers": 1420,
-  "totalStudents": 1280,
-  "totalInstructors": 140,
-  "totalCourses": 85,
-  "publishedCourses": 62,
-  "totalEnrollments": 4320,
-  "revenueTotal": "189430.00",
-  "revenueThisMonth": "12400.00",
-  "topCoursesByEnrollment": [
-    { "id": "uuid", "title": "Mastering React", "enrollmentCount": 342 }
-  ]
+  "totalUsers":       1240,
+  "totalInstructors": 42,
+  "totalCourses":     187,
+  "publishedCourses": 143,
+  "totalEnrollments": 8920,
+  "revenueTotal":     445000
 }
 ```
 
-Use `prisma.$queryRaw` for the aggregations — multiple `COUNT`, `SUM`, and `GROUP BY` queries are cleaner in raw SQL than Prisma's query API for this use case.
-
-Cache this endpoint aggressively — metrics don't change per-second and are expensive to compute:
+Use MongoDB aggregation pipelines for efficiency — one aggregate per collection, not six separate `.countDocuments()` calls:
 
 ```js
-redis.set('admin:metrics', JSON.stringify(result), 'EX', 60); // 1 minute TTL
+// Shape only
+const [userStats] = await User.aggregate([
+  {
+    $group: {
+      _id: null,
+      total: { $sum: 1 },
+      instructors: { $sum: { $cond: [{ $eq: ['$role', 'instructor'] }, 1, 0] } },
+    },
+  },
+]);
+
+const [enrollmentStats] = await Enrollment.aggregate([
+  {
+    $group: {
+      _id: null,
+      total: { $sum: 1 },
+      revenue: { $sum: '$amountPaid' },
+    },
+  },
+]);
 ```
 
 ---
 
 ## Definition of Done
 
-- [ ] `PUT /api/admin/courses/:id/approve` transitions a PENDING course to PUBLISHED, sends email, and the course appears in the catalogue on the next request
-- [ ] `PUT /api/admin/courses/:id/reject` transitions the course to REJECTED with a stored reason and sends the rejection email
-- [ ] An instructor can edit a REJECTED course and resubmit it
-- [ ] A deactivated user's access token is rejected with 403 on the next authenticated request
-- [ ] `GET /api/admin/metrics` returns correct aggregated figures (verify against direct SQL queries)
-- [ ] All admin routes return 403 to non-admin users
+- [ ] A student or instructor token attempting any `/api/admin/` route receives 403
+- [ ] `GET /api/admin/courses?status=pending` returns pending courses with instructor details
+- [ ] Approving a course sets status to `published` and clears the catalogue cache
+- [ ] Rejecting a course sets status to `rejected`
+- [ ] `GET /api/admin/metrics` returns accurate counts and revenue total
 
 Write in `learning-log/14-admin-dashboard.md`:
 
-1. Why is authorization applied at the router level rather than per-route in the admin module?
-2. The deactivation check adds a database lookup to every authenticated request. What trade-off does this create, and what would a token blocklist in Redis solve instead?
-3. Why is the metrics endpoint cached for 60 seconds rather than a longer TTL?
+1. Why must cache invalidation happen synchronously on approval rather than waiting for TTL expiry?
+2. Why use an aggregation pipeline for the metrics query instead of multiple `countDocuments()` calls?
