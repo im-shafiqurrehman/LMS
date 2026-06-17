@@ -1,137 +1,72 @@
-# EduFlow — LMS Project Guide
+# EduFlow LMS
 
-> A DevWeekends project guide for building a full-stack Learning Management System from scratch, deployed to production.
+A full-stack Learning Management System built with **Next.js**, **Express.js**, **MongoDB**, **Mongoose**, and **Redux Toolkit**.
 
----
+This repository contains the complete course documentation for building EduFlow from scratch — from project skeleton to production deployment.
 
-## What you are building
+## Tech Stack
 
-**EduFlow** is a production-grade Learning Management System. Instructors publish courses made of video lessons. Students enroll, watch lessons, track progress, and earn certificates. An admin approves courses and oversees the platform.
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 14 (App Router), TypeScript, Tailwind CSS |
+| State Management | Redux Toolkit, React-Redux |
+| Backend | Express.js (Node.js) |
+| Database | MongoDB (Atlas in production, Docker locally) |
+| ODM | Mongoose |
+| Authentication | JWT (access + refresh token pattern) |
+| Payments | Stripe (PaymentIntents + webhooks) |
+| Caching | Redis (ioredis) |
+| Search | MongoDB Atlas Search |
+| Deployment | VPS + PM2 + Nginx + Let's Encrypt |
 
-**Stack:** Node.js + Express · MongoDB · Mongoose · Redis · Cloudinary · Stripe · Resend · Next.js · Docker · Nginx · PM2
+## Course Outline
 
-**Difficulty:** Advanced — assumes you can already build CRUD APIs and climbs into auth, authorization, media delivery, caching, payments, rate limiting, and production deployment.
+See [COURSE-OUTLINE.md](./COURSE-OUTLINE.md) for the complete chapter list.
 
----
+## Phases
 
-## Folder structure of this guide
+| Phase | Chapters | Focus |
+|-------|---------|-------|
+| 1 — Foundation | 01–04 | Skeleton, config, database connection |
+| 2 — Identity | 05–08 | Data model, auth, authorization |
+| 3 — Learning Core | 09–12 | Catalogue, instructor tools |
+| 4 — Transactions | 13–16 | Payments, enrollment, lesson access |
+| 5 — Scale | 17–18 | Progress, caching, search, rate limiting |
+| 6 — Admin + Ship | 19–20 | Admin dashboard, VPS deployment |
 
-```
-LMS/
-├── 01-introduction/
-│   ├── 01.01-what-youre-building.md
-│   ├── 01.02-how-to-use-this-course.md
-│   ├── 01.03-the-product-and-its-people.md
-│   ├── 01.04-scope.md
-│   ├── 01.05-prerequisites.md
-│   └── 01.06-course-outline.md
-│
-├── phase-2-why-and-stack/
-│   ├── 02-why-mongodb.md
-│   └── 03-project-setup-and-config.md
-│
-├── phase-2b-frontend-setup/
-│   └── 04-nextjs-frontend-setup.md
-│
-├── phase-3-identity/
-│   ├── 03-authentication/
-│   │   ├── 03.01-set-the-scene.md
-│   │   ├── 03.02-the-approaches.md
-│   │   ├── 03.03-what-a-jwt-is.md
-│   │   ├── 03.04-password-hashing.md
-│   │   ├── 03.05-auth-schema.md
-│   │   ├── 03.06-scaffold-auth-module.md
-│   │   ├── 03.07-register-endpoint.md
-│   │   ├── 03.08-verify-login-refresh-logout.md
-│   │   └── 03.09-middleware-and-checklist.md
-│   └── 04-authorization/
-│       └── 04-authorization.md
-│
-├── phase-4-learning/
-│   ├── 05-course-catalogue/
-│   │   └── 05-course-catalogue.md
-│   ├── 06-instructor-course-management/
-│   │   └── 06-instructor-course-management.md
-│   ├── 07-enrollment-and-payments/
-│   │   └── 07-enrollment-and-payments.md
-│   ├── 08-lesson-access-and-video/
-│   │   └── 08-lesson-access-and-video.md
-│   ├── 09-progress-and-certificates/
-│   │   └── 09-progress-and-certificates.md
-│   └── 10-qa-system/
-│       └── 10-qa-system.md
-│
-├── phase-5-scale/
-│   ├── 10-search/
-│   │   └── 10-search.md
-│   ├── 11-caching-and-performance/
-│   │   └── 11-caching-and-performance.md
-│   ├── 12-notifications/
-│   │   └── 12-notifications.md
-│   └── 13-rate-limiting/
-│       └── 13-rate-limiting.md
-│
-├── phase-6-admin/
-│   └── 14-admin-dashboard/
-│       └── 14-admin-dashboard.md
-│
-├── phase-7-ship/
-│   ├── 15-deploy/
-│   │   └── 15-deploy.md
-│   └── 16-closing/
-│       └── 16-closing.md
-│
-└── learning-log/
-    └── 00-template.md      ← copy for each chapter
+## Learning Log
+
+Write your chapter notes in `learning-log/`. Use the template at `learning-log/00-template.md`.
+
+## Key Decisions
+
+- **MongoDB over PostgreSQL**: flexible course schema, horizontal sharding, schema evolution without migrations
+- **Mongoose over native driver**: schema validation, pre-save hooks (password hashing), .populate() for N+1 prevention
+- **Redux Toolkit over React Query**: one source of truth for all frontend state, no library duplication
+- **Cursor pagination**: no skip() scan cost at scale; no page-drift on real-time data
+- **Two-token auth**: short-lived access tokens (15m), long-lived refresh tokens stored hashed — revocable without token expiry
+- **Stripe webhook idempotency**: enrollment created only once even if Stripe delivers the webhook multiple times
+
+## Running Locally
+
+```bash
+# 1. Start the database
+docker compose up -d
+
+# 2. Backend
+cd server
+cp .env.example .env   # fill in secrets
+npm install
+npm run seed
+npm run dev            # http://localhost:3000
+
+# 3. Frontend
+cd client
+cp .env.local.example .env.local
+npm install
+npm run dev -- --port 3001  # http://localhost:3001
 ```
 
----
+## Documentation Structure
 
-## Reading order
-
-Work through chapters in the numbered order. Each chapter builds on the previous one.
-
-| Phase | Chapters | What you build |
-|-------|----------|----------------|
-| **Phase 1 — Foundations** | 01, 02, 03 | The project, the database choice (MongoDB + Mongoose), the running server |
-| **Phase 2 — Frontend** | 04 | Next.js frontend setup, API client, auth state |
-| **Phase 3 — Identity** | 05, 06 (auth + authz) | Who users are and what they are allowed to do |
-| **Phase 4 — Learning product** | 07–11 | Catalogue, courses, enrollment, lessons, progress, certificates, Q&A |
-| **Phase 5 — Scale** | 12–15 | Search, caching, notifications, rate limiting |
-| **Phase 6 — Admin** | 16 | Platform oversight, approval workflow, metrics |
-| **Phase 7 — Ship** | 17, 18 | Production deploy, documentation, demo, close |
-
----
-
-## Key technologies — quick reference
-
-| Technology | Purpose | Chapter introduced |
-|------------|---------|-------------------|
-| Express.js | HTTP framework | 03 |
-| MongoDB | Primary database | 02 |
-| Mongoose | ODM (schema, validation, query API) | 02 |
-| Zod | Request + env validation | 03 |
-| bcrypt | Password hashing | 05 |
-| jsonwebtoken | JWT signing + verification | 05 |
-| Next.js | Frontend framework | 04 |
-| Redux Toolkit | State management (auth, catalogue) | 04 |
-| React Redux | React bindings for the Redux store | 04 |
-| Cloudinary | Video + file storage | 09 |
-| Stripe | Payment processing | 10 |
-| Redis / ioredis | Caching + rate limiter store | 13 |
-| Resend | Transactional email | 14 |
-| pdfkit | Certificate PDF generation | 11 |
-| Docker Compose | Local services (MongoDB + Redis) | 03 |
-| PM2 | Process management | 17 |
-| Nginx | Reverse proxy + HTTPS termination | 17 |
-| Certbot | TLS certificate management | 17 |
-
----
-
-## Learning log
-
-Create a `learning-log/` folder in your EduFlow repo. For every chapter, copy `00-template.md`, rename it to `NN-chapter-name.md`, and write your answers before moving on. Commit after each chapter. This folder is the evidence that you understood the work — and your preparation for the viva.
-
----
-
-_EduFlow — built chapter by chapter, explained decision by decision._
+Each chapter folder contains numbered sub-chapters (`.md` files). Work through them in order. Each chapter ends with a Definition of Done checklist — do not advance with unticked boxes.
